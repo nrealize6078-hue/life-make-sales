@@ -1,0 +1,14 @@
+# 秘密情報・実データ(絶対にアップロードしない)
+.env
+sales_tool.db
+sales_tool.db-journal
+data/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# その他
+.claude/
+*.log
