@@ -6,6 +6,14 @@ echo   ライフメイクセールス (Life Make Sales) を起動します
 echo ============================================
 echo.
 
+REM .env が無ければテンプレートから作成（別PCでの初回起動用）
+if not exist ".env" (
+    if exist ".env.example" (
+        copy ".env.example" ".env" > nul
+        echo [初回セットアップ] .env を .env.example から作成しました。必要に応じてAPIキー等を編集してください。
+    )
+)
+
 REM 仮想環境がなければ作成
 if not exist ".venv\" (
     echo [初回セットアップ] Python仮想環境を作成中...

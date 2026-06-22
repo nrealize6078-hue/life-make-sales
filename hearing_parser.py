@@ -6,20 +6,22 @@
 """
 import re
 
-# 項目キー -> その項目を示唆するキーワード群
+# 人生相談カルテ：DBカラム -> 人生6大項目+α を示唆するキーワード群
+#   current_situation=家計 / challenges=住環境 / needs=万が一 / budget=老後 /
+#   authority=災害 / timeline=健康 / competitors=想い・背景 / next_action=次の一手
 FIELD_KEYWORDS = {
-    "budget": ["予算", "費用", "コスト", "金額", "円", "万円", "価格", "値段", "いくら", "投資", "ご予算"],
-    "authority": ["決裁", "決済者", "決裁者", "承認", "稟議", "権限", "社長", "役員", "部長", "課長", "担当", "窓口", "決める"],
-    "timeline": ["時期", "導入", "スケジュール", "いつ", "来期", "今期", "来月", "今月", "年内", "四半期", "納期", "開始", "タイミング"],
-    "competitors": ["競合", "他社", "比較", "相見積", "あいみつ", "コンペ", "検討中", "候補", "対抗"],
-    "challenges": ["課題", "困", "問題", "悩", "不満", "ペイン", "ボトルネック", "うまくいかな", "できていない", "手間", "非効率", "ミス"],
-    "needs": ["要望", "欲しい", "したい", "ニーズ", "期待", "実現", "理想", "求め", "あったらいい", "希望", "ゴール"],
-    "current_situation": ["現状", "今は", "現在", "使って", "運用", "体制", "やり方", "既存", "従来", "いま"],
-    "next_action": ["次回", "次の", "アクション", "宿題", "フォロー", "持ち帰", "送付", "提案", "見積", "約束", "までに", "提出"],
+    "next_action": ["次回", "次の", "宿題", "フォロー", "持ち帰", "送付", "提案", "約束", "までに", "提出", "アクション"],
+    "current_situation": ["家計", "収入", "支出", "貯金", "貯蓄", "家賃", "住居費", "ローン返済", "収支", "お金", "毎月", "手取り", "節約"],
+    "challenges": ["住まい", "住環境", "賃貸", "マイホーム", "部屋", "間取り", "広さ", "立地", "通勤", "引越", "住みたい", "持ち家", "戸建", "マンション"],
+    "needs": ["万が一", "保険", "生命保険", "死亡", "遺族", "もしも", "備え", "保障"],
+    "budget": ["老後", "年金", "リタイア", "退職", "老後資金", "セカンドライフ", "将来の生活"],
+    "authority": ["災害", "地震", "防災", "水害", "台風", "ハザード", "避難"],
+    "timeline": ["健康", "病気", "医療", "持病", "体調", "介護", "通院", "健診"],
+    "competitors": ["想い", "家族", "子供", "子ども", "将来", "夢", "大切", "価値観", "ライフプラン", "暮らし", "希望"],
 }
 
-# 表示順（next_action は最後に判定したい＝「次回までに〜」が他項目に吸われないよう優先度高め）
-FIELD_PRIORITY = ["next_action", "budget", "authority", "timeline", "competitors", "challenges", "needs", "current_situation"]
+# 判定の優先順（next_action を先に＝「次回までに〜」が他項目に吸われないよう）
+FIELD_PRIORITY = ["next_action", "needs", "budget", "authority", "timeline", "current_situation", "challenges", "competitors"]
 
 
 def _split_sentences(text: str):
@@ -29,7 +31,24 @@ def _split_sentences(text: str):
 
 def parse_hearing(text: str):
     """
-    生テキストを各項目へ振り分けて返す。
+    生テキストを各項目へ振り分けて返す（公開API）。
+    Claude が使える設定（APIキーあり & DEMO_MODE無効）なら AI 振り分け、
+    未設定・デモ・失敗時はキーワードベースに自動フォールバックする。
+    返り値: {field_key: "文1 文2", ...}（該当なしのキーは含めない）
+    """
+    try:
+        from ai_services.config import settings as _s
+        if _s.has_anthropic and not _s.DEMO_MODE:
+            from ai_services.ai import classify_hearing_ai
+            return classify_hearing_ai(text)
+    except Exception:
+        pass  # AI未設定/失敗時はキーワードベースへ
+    return parse_hearing_rule(text)
+
+
+def parse_hearing_rule(text: str):
+    """
+    キーワードベースの振り分け（オフライン・フォールバック用）。
     返り値: {field_key: "文1 文2", ...}（該当なしのキーは含めない）
     """
     result = {}

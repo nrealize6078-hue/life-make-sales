@@ -1,26 +1,28 @@
-# Render.com 用デプロイ定義(ライフメイクセールス)
+# Render.com デプロイ定義(ライフメイクセールス)— 無料プラン版(お試し用)
+# 注意: 無料プランは永続ディスク無し → 再起動/再デプロイでデータがリセットされます。
+#       本運用に切り替える時は plan を starter にし、下部の disk/DATABASE_PATH を有効化。
 services:
   - type: web
     name: life-make-sales
     runtime: docker
-    plan: starter            # SQLite永続には Disk が要るため starter 以上
+    plan: free
     healthCheckPath: /api/ai/health
     envVars:
-      - key: APP_PASSWORD     # ★必須:ログインパスワード(ダッシュボードで入力)
+      - key: APP_PASSWORD     # ★必須:ログインパスワード(Renderの画面で入力)
         sync: false
       - key: DEMO_MODE
-        value: "true"         # 本番AIを使うなら false にしてキーを入れる
+        value: "true"         # AIはサンプル動作。本物にするなら false + 各キー
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: ASSEMBLYAI_API_KEY
         sync: false
-      - key: DATABASE_PATH
-        value: /data/sales_tool.db
-      - key: UPLOAD_DIR
-        value: /data/uploads
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 1
+
+  # ── 本運用(有料Starter)に切り替える時はこちらを使う ──
+  # plan: starter
+  # envVars に DATABASE_PATH=/data/sales_tool.db / UPLOAD_DIR=/data/uploads を追加
+  # disk:
+  #   name: data
+  #   mountPath: /data
+  #   sizeGB: 1

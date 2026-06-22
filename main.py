@@ -17,35 +17,53 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import database as db
+import auth
+import hubspot_sync
 from task_extractor import extract_tasks
 from hearing_parser import parse_hearing
 from ai_services.config import settings as ai_settings  # これで .env が読み込まれる
 from ai_services import jobs_sql
 from ai_services.diarize import format_dialogue
-from ai_services.ai import generate_minutes as ai_generate_minutes, AIError
+from ai_services.ai import generate_minutes as ai_generate_minutes, generate_talk_points as ai_talk_points, AIError
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
-# ----- ログイン認証(APP_PASSWORD が空なら無効=従来どおり) -----
+# ----- ログイン認証(ユーザー別アカウント / ロール / セッション失効) -----
+# 互換: ユーザーが居らず APP_PASSWORD があれば admin を自動作成して認証ON。
+#       ユーザーも APP_PASSWORD も無ければ認証OFF(従来どおり全公開)。
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 _COOKIE = "lms_session"
 
 
-def _session_token() -> str:
-    return hashlib.sha256(("lms:" + APP_PASSWORD).encode()).hexdigest()
+def _current_user(request: Request):
+    """Cookie のセッショントークンから現在のユーザーを返す(無効なら None)。"""
+    return auth.get_session_user(request.cookies.get(_COOKIE))
 
 
 def _is_authed(request: Request) -> bool:
-    return (not APP_PASSWORD) or request.cookies.get(_COOKIE) == _session_token()
+    return (not auth.auth_enabled()) or _current_user(request) is not None
+
+
+def _require_admin(request: Request):
+    u = _current_user(request)
+    if not auth.auth_enabled():
+        return None  # 認証OFF時は誰でも管理操作可(ローカル単独利用)
+    if not u or u.get("role") != "admin":
+        raise HTTPException(403, "管理者権限が必要です")
+    return u
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 起動時にDB初期化（on_event は非推奨のため lifespan を使用）
     db.init_db()
-    jobs_sql.recover_stuck()  # 再起動で中断したAI処理を復旧
+    auth.bootstrap(APP_PASSWORD)  # 初回のみ admin を自動作成
+    auth.purge_expired()          # 期限切れセッションを掃除
+    jobs_sql.recover_stuck()      # 中断したAI処理を queued に戻す
+    jobs_sql.start_worker()       # DBキューを処理する常駐ワーカーを開始
     yield
+    jobs_sql.stop_worker()        # 終了時にワーカーを停止
 
 
 app = FastAPI(title="ライフメイクセールス (Life Make Sales)", version="3.0.0", lifespan=lifespan)
@@ -65,37 +83,148 @@ async def _no_cache_static(request, call_next):
 
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next):
-    """APP_PASSWORD 設定時、業務API(/api/*)を保護する。認証/ヘルスは除外。"""
+    """認証ON時、業務API(/api/*)を保護する。認証/ヘルスは除外。"""
     p = request.url.path
-    if APP_PASSWORD and p.startswith("/api/") and not p.startswith("/api/auth/") and p != "/api/ai/health":
+    if p.startswith("/api/") and not p.startswith("/api/auth/") and p != "/api/ai/health":
         if not _is_authed(request):
             return JSONResponse({"detail": "ログインが必要です"}, status_code=401)
     return await call_next(request)
 
 
 class LoginIn(BaseModel):
+    username: Optional[str] = None
+    password: str
+
+
+class UserIn(BaseModel):
+    username: str
+    password: str
+    role: str = "member"
+    display_name: Optional[str] = None
+
+
+class UserUpdateIn(BaseModel):
+    role: Optional[str] = None
+    active: Optional[bool] = None
+    display_name: Optional[str] = None
+
+
+class PasswordIn(BaseModel):
     password: str
 
 
 @app.get("/api/auth/me")
 def auth_me(request: Request):
-    return {"auth_enabled": bool(APP_PASSWORD), "authenticated": _is_authed(request)}
+    u = _current_user(request)
+    return {
+        "auth_enabled": auth.auth_enabled(),
+        "authenticated": _is_authed(request),
+        "user": u,
+        "is_admin": (u or {}).get("role") == "admin" if u else (not auth.auth_enabled()),
+    }
 
 
 @app.post("/api/auth/login")
 def auth_login(body: LoginIn, response: Response):
-    if not APP_PASSWORD:
+    if not auth.auth_enabled():
         return {"ok": True, "note": "認証は無効です"}
-    if body.password != APP_PASSWORD:
-        raise HTTPException(401, "パスワードが違います")
-    response.set_cookie(_COOKIE, _session_token(), httponly=True, samesite="lax", max_age=60 * 60 * 24 * 7)
-    return {"ok": True}
+    username = (body.username or "admin").strip()  # 旧UI(username無し)は admin とみなす
+    user = auth.get_user_by_name(username)
+    if not user or not auth.verify_password(body.password, user["password_hash"]):
+        raise HTTPException(401, "ユーザー名またはパスワードが違います")
+    token = auth.create_session(user["id"])
+    response.set_cookie(_COOKIE, token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * auth.SESSION_DAYS)
+    return {"ok": True, "user": {"username": user["username"], "role": user["role"], "display_name": user["display_name"]}}
 
 
 @app.post("/api/auth/logout")
-def auth_logout(response: Response):
+def auth_logout(request: Request, response: Response):
+    auth.revoke_session(request.cookies.get(_COOKIE))
     response.delete_cookie(_COOKIE)
     return {"ok": True}
+
+
+# ----- 自分のパスワード変更 -----
+@app.post("/api/account/password")
+def change_my_password(body: PasswordIn, request: Request):
+    u = _current_user(request)
+    if auth.auth_enabled() and not u:
+        raise HTTPException(401, "ログインが必要です")
+    if not u:
+        raise HTTPException(400, "認証が無効のため変更できません")
+    try:
+        auth.set_password(u["id"], body.password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+# ----- ユーザー管理(管理者のみ) -----
+@app.get("/api/users")
+def users_list(request: Request):
+    _require_admin(request)
+    return auth.list_users()
+
+
+@app.post("/api/users")
+def users_create(body: UserIn, request: Request):
+    _require_admin(request)
+    try:
+        uid = auth.create_user(body.username, body.password, body.role, body.display_name or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"id": uid}
+
+
+@app.patch("/api/users/{user_id}")
+def users_update(user_id: int, body: UserUpdateIn, request: Request):
+    _require_admin(request)
+    try:
+        auth.update_user(user_id, role=body.role, active=body.active, display_name=body.display_name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/users/{user_id}/password")
+def users_set_password(user_id: int, body: PasswordIn, request: Request):
+    _require_admin(request)
+    try:
+        auth.set_password(user_id, body.password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/users/{user_id}")
+def users_delete(user_id: int, request: Request):
+    admin = _require_admin(request)
+    if admin and admin["id"] == user_id:
+        raise HTTPException(400, "自分自身は削除できません")
+    auth.delete_user(user_id)
+    return {"ok": True}
+
+
+# ----- HubSpot 連携(外部CRM同期) -----
+@app.get("/api/integrations/hubspot/status")
+def hubspot_status():
+    return hubspot_sync.status()
+
+
+@app.post("/api/integrations/hubspot/push")
+def hubspot_push(request: Request):
+    _require_admin(request)
+    if not hubspot_sync.is_configured():
+        raise HTTPException(400, "HUBSPOT_TOKEN が未設定です。サーバーの .env に設定してください。")
+    return hubspot_sync.push_all()
+
+
+@app.post("/api/integrations/hubspot/pull")
+def hubspot_pull(request: Request):
+    _require_admin(request)
+    if not hubspot_sync.is_configured():
+        raise HTTPException(400, "HUBSPOT_TOKEN が未設定です。サーバーの .env に設定してください。")
+    return hubspot_sync.pull_companies()
 
 
 def now_iso():
@@ -130,7 +259,7 @@ class ContactIn(BaseModel):
 class DealIn(BaseModel):
     company_id: Optional[int] = None
     title: str
-    stage: str = "リード"
+    stage: str = "反響・予約"
     amount: int = 0
     probability: int = 0
     expected_close: Optional[str] = None
@@ -226,19 +355,19 @@ def dashboard():
         c = conn.cursor()
         companies = c.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
         open_deals = c.execute(
-            "SELECT COUNT(*) FROM deals WHERE stage NOT IN ('受注','失注')"
+            "SELECT COUNT(*) FROM deals WHERE stage NOT IN ('契約','失注')"
         ).fetchone()[0]
-        won = c.execute("SELECT COUNT(*) FROM deals WHERE stage='受注'").fetchone()[0]
+        won = c.execute("SELECT COUNT(*) FROM deals WHERE stage='契約'").fetchone()[0]
         lost = c.execute("SELECT COUNT(*) FROM deals WHERE stage='失注'").fetchone()[0]
         pipeline_amount = c.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM deals WHERE stage NOT IN ('受注','失注')"
+            "SELECT COALESCE(SUM(amount),0) FROM deals WHERE stage NOT IN ('契約','失注')"
         ).fetchone()[0]
         won_amount = c.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM deals WHERE stage='受注'"
+            "SELECT COALESCE(SUM(amount),0) FROM deals WHERE stage='契約'"
         ).fetchone()[0]
         # 加重見込み（金額 × 確度）
         weighted = c.execute(
-            "SELECT COALESCE(SUM(amount * probability / 100.0),0) FROM deals WHERE stage NOT IN ('受注','失注')"
+            "SELECT COALESCE(SUM(amount * probability / 100.0),0) FROM deals WHERE stage NOT IN ('契約','失注')"
         ).fetchone()[0]
         open_tasks = c.execute("SELECT COUNT(*) FROM tasks WHERE status != '完了'").fetchone()[0]
         upcoming = c.execute("SELECT COUNT(*) FROM meetings WHERE status='予定'").fetchone()[0]
@@ -250,6 +379,16 @@ def dashboard():
         ).fetchone()[0]
 
         win_rate = round(won / (won + lost) * 100) if (won + lost) > 0 else 0
+        # クローザー向けKPI
+        avg_won_amount = round(won_amount / won) if won > 0 else 0
+        from datetime import datetime as _dt, timedelta as _td
+        _today = _dt.now()
+        _week_start = (_today - _td(days=_today.weekday())).date().isoformat()
+        _week_end = (_today - _td(days=_today.weekday()) + _td(days=7)).date().isoformat()
+        this_week_meetings = c.execute(
+            "SELECT COUNT(*) FROM meetings WHERE scheduled_at >= ? AND scheduled_at < ?",
+            (_week_start, _week_end),
+        ).fetchone()[0]
 
         # ステージ別件数・金額（未知ステージでも壊れないよう setdefault）
         stage_counts = {s: 0 for s in db.DEAL_STAGES}
@@ -290,6 +429,8 @@ def dashboard():
             "overdue_tasks": overdue_tasks,
             "upcoming_meetings": upcoming,
             "win_rate": win_rate,
+            "avg_won_amount": avg_won_amount,
+            "this_week_meetings": this_week_meetings,
             "stage_counts": stage_counts,
             "stage_amounts": stage_amounts,
             "today_str": today,
@@ -341,7 +482,7 @@ def list_companies():
     try:
         rows = conn.execute(
             "SELECT c.*, "
-            "(SELECT COUNT(*) FROM deals d WHERE d.company_id=c.id AND d.stage NOT IN ('受注','失注')) AS open_deals, "
+            "(SELECT COUNT(*) FROM deals d WHERE d.company_id=c.id AND d.stage NOT IN ('契約','失注')) AS open_deals, "
             "(SELECT COUNT(*) FROM contacts ct WHERE ct.company_id=c.id) AS contact_count "
             "FROM companies c ORDER BY c.created_at DESC"
         ).fetchall()
@@ -514,9 +655,9 @@ def move_deal_stage(deal_id: int, body: StageIn):
     _validate_stage(body.stage)
     conn = db.get_conn()
     try:
-        # 受注/失注に動かしたら確度も自動調整
+        # 契約/失注に動かしたら確度も自動調整
         prob = None
-        if body.stage == "受注":
+        if body.stage == "契約":
             prob = 100
         elif body.stage == "失注":
             prob = 0
@@ -526,6 +667,33 @@ def move_deal_stage(deal_id: int, body: StageIn):
         else:
             conn.execute("UPDATE deals SET stage=?, updated_at=? WHERE id=?",
                          (body.stage, now_iso(), deal_id))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# 4章プレゼンの進捗チェックリスト(家は買うべき→今→ここ→うち)
+PRESENTATION_STEPS = ["人生相談", "①家は買うべき", "②今買うべき", "③ここを買うべき", "④うちから買うべき", "資金計画", "クロージング"]
+
+
+class PresentationIn(BaseModel):
+    presentation: dict  # {"①家は買うべき": true, ...}
+
+
+@app.get("/api/presentation_steps")
+def presentation_steps():
+    return {"steps": PRESENTATION_STEPS}
+
+
+@app.patch("/api/deals/{deal_id}/presentation")
+def update_presentation(deal_id: int, body: PresentationIn):
+    conn = db.get_conn()
+    try:
+        if not conn.execute("SELECT 1 FROM deals WHERE id=?", (deal_id,)).fetchone():
+            raise HTTPException(404, "商談が見つかりません")
+        conn.execute("UPDATE deals SET presentation=?, updated_at=? WHERE id=?",
+                     (json.dumps(body.presentation, ensure_ascii=False), now_iso(), deal_id))
         conn.commit()
         return {"ok": True}
     finally:
@@ -708,7 +876,7 @@ def delete_meeting(meeting_id: int):
 #  AI議事録（音声→文字起こし→議事録/要約/次アクション/話者分離）
 #  meetings テーブルを共有し、商談・顧客・タスクと連携する。
 # ============================================================
-ALLOWED_AUDIO_EXT = {".mp3", ".m4a", ".wav", ".webm", ".mp4", ".mpga", ".ogg", ".flac"}
+ALLOWED_AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".webm", ".mp4", ".mpga", ".ogg", ".oga", ".flac", ".opus"}
 _AI_JSON_FIELDS = ("utterances", "speaker_map", "decisions", "next_actions", "tags")
 
 
@@ -732,8 +900,30 @@ def ai_health():
         "anthropic_configured": ai_settings.has_anthropic,
         "openai_configured": ai_settings.has_openai,
         "assemblyai_configured": ai_settings.has_assemblyai,
+        "local_whisper": ai_settings.LOCAL_WHISPER,
+        "can_generate": ai_settings.DEMO_MODE or ai_settings.has_anthropic,
         "claude_model": ai_settings.CLAUDE_MODEL,
     }
+
+
+@app.delete("/api/minutes/{meeting_id}")
+def delete_minutes(meeting_id: int):
+    """議事録(meetings行)と、ひもづくアップロード音声ファイルを削除する。
+    /api/meetings/{id} と異なり、残骸となる音声ファイルもディスクから消す。"""
+    conn = db.get_conn()
+    try:
+        row = conn.execute("SELECT audio_filename FROM meetings WHERE id=?", (meeting_id,)).fetchone()
+        conn.execute("DELETE FROM meetings WHERE id=?", (meeting_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    # 音声ファイルの後始末(残骸防止)。失敗してもDB削除は成立しているので握りつぶす。
+    if row and row["audio_filename"]:
+        try:
+            (ai_settings.UPLOAD_DIR / row["audio_filename"]).unlink(missing_ok=True)
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 @app.get("/api/minutes")
@@ -819,16 +1009,16 @@ async def minutes_upload(
     try:
         cur = conn.execute(
             "INSERT INTO meetings (company_id, contact_id, deal_id, title, status, meeting_type, "
-            "audio_filename, diarize, ai_status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "audio_filename, diarize, auto_generate, ai_status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (company_id, contact_id, deal_id, title, "実施済", "オンライン",
-             saved_name, 1 if diarize else 0, "queued", now_iso()),
+             saved_name, 1 if diarize else 0, 1 if auto_generate else 0, "queued", now_iso()),
         )
         conn.commit()
         mid = cur.lastrowid
     finally:
         conn.close()
 
-    background.add_task(jobs_sql.process_minutes, mid, diarize, auto_generate)
+    # 常駐ワーカー(jobs_sql)が queued を拾って処理する
     return {"id": mid, "ai_status": "queued"}
 
 
@@ -926,12 +1116,11 @@ def minutes_reprocess(meeting_id: int, background: BackgroundTasks):
             raise HTTPException(400, "音声がない記録は再処理できません")
         if not (ai_settings.UPLOAD_DIR / row["audio_filename"]).exists():
             raise HTTPException(400, "音声ファイルが見つかりません")
-        conn.execute("UPDATE meetings SET ai_status='queued', error_message=NULL WHERE id=?", (meeting_id,))
+        conn.execute("UPDATE meetings SET ai_status='queued', auto_generate=1, error_message=NULL WHERE id=?", (meeting_id,))
         conn.commit()
-        diar = bool(row["diarize"])
     finally:
         conn.close()
-    background.add_task(jobs_sql.process_minutes, meeting_id, diar, True)
+    # 常駐ワーカー(jobs_sql)が queued を拾って処理する
     return {"id": meeting_id, "ai_status": "queued"}
 
 
@@ -1000,6 +1189,59 @@ def minutes_actions_to_tasks(meeting_id: int):
         conn.close()
 
 
+class MinutesLinkIn(BaseModel):
+    company_id: Optional[int] = None
+    deal_id: Optional[int] = None
+
+
+@app.patch("/api/minutes/{meeting_id}/link")
+def minutes_link(meeting_id: int, body: MinutesLinkIn):
+    """議事録を顧客/商談にひも付け(変更)。"""
+    conn = db.get_conn()
+    try:
+        if not conn.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone():
+            raise HTTPException(404, "記録が見つかりません")
+        conn.execute("UPDATE meetings SET company_id=?, deal_id=? WHERE id=?",
+                     (body.company_id, body.deal_id, meeting_id))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+class ActionIndexIn(BaseModel):
+    index: int
+
+
+@app.post("/api/minutes/{meeting_id}/action_to_task")
+def minutes_action_to_task(meeting_id: int, body: ActionIndexIn):
+    """次アクションを1件だけタスク化(ワンクリックTo-Do)。"""
+    conn = db.get_conn()
+    try:
+        row = conn.execute("SELECT * FROM meetings WHERE id=?", (meeting_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "記録が見つかりません")
+        actions = json.loads(row["next_actions"]) if row["next_actions"] else []
+        if body.index < 0 or body.index >= len(actions):
+            raise HTTPException(400, "アクションが見つかりません")
+        a = actions[body.index]
+        task = a.get("task") if isinstance(a, dict) else str(a)
+        due = a.get("due") if isinstance(a, dict) else None
+        if not task:
+            raise HTTPException(400, "空のアクションです")
+        due_date = due if (due and len(due) == 10 and due[4] == "-") else None
+        conn.execute(
+            "INSERT INTO tasks (title, source_text, due_date, priority, status, company_id, deal_id, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (task, f"議事録「{row['title']}」より", due_date, "中", "未着手",
+             row["company_id"], row["deal_id"], now_iso()),
+        )
+        conn.commit()
+        return {"ok": True, "task": task}
+    finally:
+        conn.close()
+
+
 # ============================================================
 #  ヒアリングシート（音声入力対応）
 # ============================================================
@@ -1028,8 +1270,27 @@ def get_hearing(hearing_id: int):
     try:
         row = conn.execute("SELECT * FROM hearing_sheets WHERE id=?", (hearing_id,)).fetchone()
         if not row:
-            raise HTTPException(404, "ヒアリングシートが見つかりません")
+            raise HTTPException(404, "人生相談カルテが見つかりません")
         return dict(row)
+    finally:
+        conn.close()
+
+
+@app.post("/api/hearings/{hearing_id}/talk_points")
+def hearing_talk_points(hearing_id: int):
+    """人生相談カルテから AI が提案トーク(切り口)を生成する。"""
+    conn = db.get_conn()
+    try:
+        row = conn.execute("SELECT * FROM hearing_sheets WHERE id=?", (hearing_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "人生相談カルテが見つかりません")
+        try:
+            md = ai_talk_points(dict(row))
+        except AIError as e:
+            raise HTTPException(502, f"提案トーク生成に失敗: {e}")
+        conn.execute("UPDATE hearing_sheets SET talk_points=? WHERE id=?", (md, hearing_id))
+        conn.commit()
+        return {"talk_points": md}
     finally:
         conn.close()
 

@@ -14,22 +14,57 @@ os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
 
 def get_conn():
     """1リクエストごとに接続を返す。row_factory で dict 風アクセスを可能にする。"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")  # ワーカーとWeb処理の書込競合に備える
     return conn
 
 
-# 商談ステージ（商談フローの段階定義）
+# 商談ステージ（クロージング導線：反響→人生相談→4章プレゼン→交渉→契約）
 DEAL_STAGES = [
-    "リード",
-    "アプローチ",
-    "ヒアリング",
-    "提案",
-    "見積",
-    "クロージング",
-    "受注",
+    "反響・予約",
+    "人生相談",
+    "プレゼン",
+    "交渉",
+    "契約",
     "失注",
+]
+# 旧ステージ → 新ステージ の対応（既存データ移行用）
+STAGE_MIGRATION = {
+    "リード": "反響・予約",
+    "アプローチ": "反響・予約",
+    "ヒアリング": "人生相談",
+    "提案": "プレゼン",
+    "見積": "交渉",
+    "クロージング": "交渉",
+    "受注": "契約",
+    "失注": "失注",
+}
+
+# トップクローザー育成カリキュラム（PDF「トップクローザー研修プログラム」準拠）
+# (category, title, content, sort_order)
+TOP_CLOSER_CURRICULUM = [
+    ("基礎", "クローザーの基本姿勢",
+     "・後悔しない選択を“共に創る”。\n・売り込まない／急がせない。潜在客に“根拠”を伝える。\n・約束は必ず守り、レスポンスは早く。", 1),
+    ("基礎", "賃貸窓口からマイホームへの導線",
+     "リアライズクラブ(福利厚生)で企業導入 → 完全予約制 → マイホーム提案。\n誰もやっていないブルーオーシャンの導線。", 2),
+    ("人生相談", "人生6大項目の整理",
+     "家計・住環境・万が一・老後・災害・病気の現状を一緒に見える化。\n“買う/買わない”ではなく“住居費設計”へ視点を移す。", 3),
+    ("人生相談", "人生相談カルテの作り方",
+     "お客様の現状把握 → 不安の言語化 → 次の一手。\nヒアリングを“雑談”から“設計”に変え、警戒心を下げる。", 4),
+    ("プレゼン", "4章プレゼンの型",
+     "①家は買うべき ②今買うべき ③ここを買うべき ④うちから買うべき。\n各章の根拠を順に積み上げ、納得で進める。", 5),
+    ("プレゼン", "よくある質問Q&A対応",
+     "「賃貸で十分」「今じゃない」等への根拠ベースの返し。\n潜在客に根拠を伝える手法でオーバートークを避ける。", 6),
+    ("交渉・クロージング", "完全交渉マニュアル(ルーティン化)",
+     "交渉を仕組み化・ルーティン化。\nテストクロージングで温度感を測り、次の一歩を明確に握る。", 7),
+    ("契約・手続き", "契約と住宅ローン手続き",
+     "売買/請負契約・重要事項説明・住宅ローン手続きの型。\nマニュアルに沿って進め、専属スタッフがフォロー。", 8),
+    ("集客・RC導線", "リアライズクラブからの集客",
+     "福利厚生(RC)で企業導入 → 完全予約制 → マイホーム提案へつなぐB2B2C導線。", 9),
+    ("ツール活用", "AI(ミオ/アオ/ディグラム)とリアプラ",
+     "ミオ先生=お客様の整理と安心／アオ先生=クローザーの判断と覚悟／ディグラムGPT=物件調査・広告・ロープレ・契約支援。\nリアプラ=24時間の学習管理。", 10),
 ]
 
 
@@ -64,7 +99,7 @@ CREATE TABLE IF NOT EXISTS deals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id INTEGER,
     title TEXT NOT NULL,
-    stage TEXT NOT NULL DEFAULT 'リード',
+    stage TEXT NOT NULL DEFAULT '反響・予約',
     amount INTEGER DEFAULT 0,
     probability INTEGER DEFAULT 0,
     expected_close TEXT,
@@ -154,6 +189,26 @@ CREATE TABLE IF NOT EXISTS training_progress (
     updated_at TEXT NOT NULL,
     FOREIGN KEY (module_id) REFERENCES training_modules(id) ON DELETE CASCADE
 );
+
+-- 認証：ユーザー（クローザー）アカウント
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    password_hash TEXT NOT NULL,   -- pbkdf2 salt$hash
+    role TEXT NOT NULL DEFAULT 'member',  -- admin / member
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+-- 認証：ログインセッション（トークン失効に対応）
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 """
 
 
@@ -182,15 +237,44 @@ _MEETING_AI_COLUMNS = {
     "tags": "TEXT",            # JSON 文字列
     "ai_status": "TEXT",       # queued/processing/transcribed/summarizing/summarized/error
     "error_message": "TEXT",
+    "auto_generate": "INTEGER DEFAULT 1",  # キュー処理時に議事録生成まで行うか
 }
+
+
+def _ensure_columns(conn, table, columns):
+    existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    for name, decl in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def _migrate(conn):
     """既存DBに不足カラムを追加する簡易マイグレーション。"""
-    existing = {r["name"] for r in conn.execute("PRAGMA table_info(meetings)")}
-    for name, decl in _MEETING_AI_COLUMNS.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE meetings ADD COLUMN {name} {decl}")
+    _ensure_columns(conn, "meetings", _MEETING_AI_COLUMNS)
+    # 商談: 4章プレゼン進捗(JSON), 顧客の人生相談カルテ: AI提案トーク(JSON)
+    _ensure_columns(conn, "deals", {"presentation": "TEXT"})
+    _ensure_columns(conn, "hearing_sheets", {"talk_points": "TEXT"})
+
+    # HubSpot連携: 外部CRMのオブジェクトIDを保持(再同期で重複作成しないため)
+    _ensure_columns(conn, "companies", {"hubspot_id": "TEXT"})
+    _ensure_columns(conn, "contacts", {"hubspot_id": "TEXT"})
+    _ensure_columns(conn, "deals", {"hubspot_id": "TEXT"})
+
+    # 旧ステージの商談を新ステージへ移行
+    for old, new in STAGE_MIGRATION.items():
+        if old != new:
+            conn.execute("UPDATE deals SET stage=? WHERE stage=?", (new, old))
+
+    # 育成カリキュラムをトップクローザー版へ差し替え(新版が未投入なら入れ替え)
+    has_new = conn.execute(
+        "SELECT COUNT(*) FROM training_modules WHERE title='4章プレゼンの型'"
+    ).fetchone()[0]
+    if not has_new:
+        conn.execute("DELETE FROM training_modules")
+        conn.executemany(
+            "INSERT INTO training_modules (category, title, content, sort_order) VALUES (?,?,?,?)",
+            TOP_CLOSER_CURRICULUM,
+        )
     conn.commit()
 
 
@@ -198,30 +282,17 @@ def _seed(conn):
     """データが空のときだけサンプルを投入する。"""
     now = datetime.now().isoformat(timespec="seconds")
 
-    # --- 営業育成モジュール（常に最新の標準カリキュラムを保証） ---
+    # --- 育成カリキュラム（空なら投入。通常は _migrate で最新化済み） ---
     if conn.execute("SELECT COUNT(*) FROM training_modules").fetchone()[0] == 0:
-        modules = [
-            ("基礎", "営業の基本姿勢とマインドセット",
-             "・顧客の成功が自分の成功。\n・売り込むのではなく課題を一緒に解決する。\n・約束は必ず守り、レスポンスは早く。", 1),
-            ("基礎", "アポイント獲得の型",
-             "1. 相手の課題仮説を立てる\n2. 会う価値（メリット）を一言で\n3. 日程は二者択一で提案\n4. 断られても次回接点を残す", 2),
-            ("ヒアリング", "BANT条件の聞き出し方",
-             "Budget(予算) / Authority(決裁者) / Need(必要性) / Timeline(時期)。\n直接聞かず、背景→現状→課題→理想の順で会話を展開する。", 3),
-            ("ヒアリング", "課題の深掘り（なぜを5回）",
-             "表面的な要望の裏にある『本当の困りごと』を掘る。\n『なぜそれが必要なのですか？』を繰り返し、定量的な影響まで聞く。", 4),
-            ("提案", "提案資料の組み立て",
-             "現状→課題→あるべき姿→解決策→効果→費用→導入ステップ。\n顧客の言葉をそのまま使うと刺さりやすい。", 5),
-            ("クロージング", "反論処理とクロージング",
-             "よくある反論（高い/今じゃない/検討する）への切り返しを用意。\nテストクロージングで温度感を測り、次の一歩を明確に握る。", 6),
-        ]
         conn.executemany(
             "INSERT INTO training_modules (category, title, content, sort_order) VALUES (?,?,?,?)",
-            modules,
+            TOP_CLOSER_CURRICULUM,
         )
         conn.commit()
 
-    # --- 取引・顧客サンプル（初回のみ。各ステージに商談が並ぶデモ） ---
-    if conn.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 0:
+    # --- 取引・顧客サンプル（SEED_SAMPLE=true のときだけ投入。既定は実データ運用） ---
+    if os.getenv("SEED_SAMPLE", "false").lower() in ("1", "true", "yes") \
+            and conn.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 0:
         cur = conn.cursor()
 
         def days(n):
@@ -239,27 +310,27 @@ def _seed(conn):
             ("株式会社サンプル商事", "卸売", "東京都千代田区1-1-1", "03-1234-5678", "https://example.com",
              "展示会で名刺交換。福利厚生サービスに関心あり。",
              ("山田 太郎", "総務部長", "yamada@example.com", "090-0000-0001"),
-             ("福利厚生サービス導入", "ヒアリング", 1200000, 40, 30, "従業員300名規模。月額課金モデルを提案予定。")),
+             ("福利厚生サービス導入", "人生相談", 1200000, 40, 30, "従業員300名規模。月額課金モデルを提案予定。")),
             ("グリーンテック工業", "製造", "大阪府大阪市北区2-2-2", "06-2222-3333", "https://greentech.example.jp",
              "工場のDX推進中。現場改善ツールを比較検討。",
              ("佐藤 花子", "DX推進室 室長", "sato@greentech.example.jp", "090-0000-0002"),
-             ("現場DXパッケージ", "提案", 3500000, 60, 21, "競合2社と比較中。ROIを資料で訴求。")),
+             ("現場DXパッケージ", "プレゼン", 3500000, 60, 21, "競合2社と比較中。ROIを資料で訴求。")),
             ("みらいフーズ株式会社", "食品", "愛知県名古屋市中区3-3-3", "052-444-5555", "https://miraifoods.example.jp",
              "多店舗展開。シフト管理の効率化が課題。",
              ("鈴木 一郎", "経営企画 部長", "suzuki@miraifoods.example.jp", "090-0000-0003"),
-             ("シフト管理SaaS", "見積", 980000, 70, 14, "見積提示済み。決裁は今月末予定。")),
+             ("シフト管理SaaS", "交渉", 980000, 70, 14, "見積提示済み。決裁は今月末予定。")),
             ("ABCコンサルティング", "サービス", "福岡県福岡市博多区4-4-4", "092-666-7777", "https://abc-c.example.jp",
              "紹介経由のリード。まずは情報交換から。",
              ("高橋 美咲", "代表取締役", "takahashi@abc-c.example.jp", "090-0000-0004"),
-             ("営業代行プラン", "リード", 600000, 15, 45, "初回アプローチ前。ニーズ未確認。")),
+             ("営業代行プラン", "反響・予約", 600000, 15, 45, "初回アプローチ前。ニーズ未確認。")),
             ("日本ロジ流通", "物流", "神奈川県横浜市西区5-5-5", "045-888-9999", "https://nipponlogi.example.jp",
              "繁忙期の人員配置に課題。導入実績を重視。",
              ("田中 健", "物流統括 マネージャー", "tanaka@nipponlogi.example.jp", "090-0000-0005"),
-             ("配車最適化システム", "クロージング", 2400000, 85, 7, "最終承認待ち。来週受注見込み。")),
+             ("配車最適化システム", "交渉", 2400000, 85, 7, "最終承認待ち。来週受注見込み。")),
             ("スマイル歯科クリニック", "医療", "北海道札幌市中央区6-6-6", "011-100-2000", "https://smile-dc.example.jp",
              "予約管理の効率化で成約。今後の追加提案余地あり。",
              ("渡辺 由美", "院長", "watanabe@smile-dc.example.jp", "090-0000-0006"),
-             ("予約管理システム", "受注", 750000, 100, -3, "先月受注。導入サポート中。")),
+             ("予約管理システム", "契約", 750000, 100, -3, "先月受注。導入サポート中。")),
         ]
 
         first_deal_id = first_company_id = first_contact_id = None

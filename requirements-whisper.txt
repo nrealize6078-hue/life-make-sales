@@ -1,0 +1,5 @@
+# ローカル文字起こし（無料・キー不要）用の依存。
+# 本体(.venv)とは別の whisper_venv に入れる（Python 3.9〜3.12 推奨）。
+# faster-whisper が av / ctranslate2 / tokenizers / onnxruntime 等を自動で導入する。
+# 既知の動作実績: Python 3.9.13 + 下記。
+faster-whisper==1.2.1

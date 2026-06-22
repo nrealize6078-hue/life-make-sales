@@ -21,6 +21,10 @@ class _Settings:
 
     DEMO_MODE: bool = os.getenv("DEMO_MODE", "false").lower() in ("1", "true", "yes", "on")
 
+    # ローカルWhisper(無料・キー不要・PCで処理)。true で文字起こしをローカル実行。
+    LOCAL_WHISPER: bool = os.getenv("LOCAL_WHISPER", "false").lower() in ("1", "true", "yes", "on")
+    WHISPER_LOCAL_MODEL: str = os.getenv("WHISPER_LOCAL_MODEL", "small")  # tiny/base/small/medium
+
     UPLOAD_DIR: Path = Path(os.getenv("UPLOAD_DIR", str(_ROOT / "data" / "uploads")))
     MAX_UPLOAD_MB: int = int(os.getenv("MAX_UPLOAD_MB", "500"))
 

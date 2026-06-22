@@ -12,3 +12,16 @@ __pycache__/
 # その他
 .claude/
 *.log
+cloudflared.exe
+whisper_venv/
+_test_tone.wav
+
+# 作業・ビルド・検証用の一時物（別PCに持ち込まない）
+_docxbuild/
+node_modules/
+_qtest*.db
+_hstest.db
+_authtest.db
+_qtest_uploads*/
+*.pdf
+~$*

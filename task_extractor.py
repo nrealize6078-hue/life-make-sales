@@ -80,7 +80,23 @@ def _clean(line: str):
 
 def extract_tasks(text: str):
     """
-    自由文からタスク候補のリストを返す。
+    自由文からタスク候補のリストを返す（公開API）。
+    Claude が使える設定（APIキーあり & DEMO_MODE無効）なら AI 抽出、
+    未設定・デモ・失敗時はルールベースに自動フォールバックする。
+    """
+    try:
+        from ai_services.config import settings as _s
+        if _s.has_anthropic and not _s.DEMO_MODE:
+            from ai_services.ai import extract_tasks_ai
+            return extract_tasks_ai(text)
+    except Exception:
+        pass  # AI未設定/失敗時はルールベースへ
+    return extract_tasks_rule(text)
+
+
+def extract_tasks_rule(text: str):
+    """
+    ルールベースのタスク抽出（オフライン・フォールバック用）。
     返り値: [{"title", "due_date", "priority", "source_text"}, ...]
     """
     if not text or not text.strip():
