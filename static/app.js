@@ -947,7 +947,7 @@ function happinessForm(data = {}) {
       <div class="field-row-mic"><label>メモ</label><button type="button" class="mic-btn" id="mic-hap">🎤</button></div>
       <textarea id="hap-memo" placeholder="気づき・反応など">${esc(data.memo)}</textarea>
     </div>
-    <div class="form-actions">${editing ? `<button class="btn danger" onclick="delHap(${data.id},true)">削除</button>` : ''}<span class="spacer"></span>
+    <div class="form-actions">${editing ? `<button class="btn danger" onclick="delHap(${data.id},true)">削除</button><button class="btn ghost" onclick="printHap(${data.id})">🖨️ PDF / 印刷</button>` : ''}<span class="spacer"></span>
       <button class="btn ghost" onclick="closeModal()">キャンセル</button><button class="btn" id="hap-save">${editing ? '保存' : '登録'}</button></div>`);
 
   const updateVerdict = () => {
@@ -1158,7 +1158,7 @@ function karteForm(data = {}) {
       <textarea data-fid="_voice_memo" rows="3" placeholder="（聞き取りメモ）">${esc(D._voice_memo)}</textarea>
     </div>
     ${secHtml}
-    <div class="form-actions">${editing ? `<button class="btn danger" onclick="delKarte(${data.id},true)">削除</button>` : ''}<span class="spacer"></span>
+    <div class="form-actions">${editing ? `<button class="btn danger" onclick="delKarte(${data.id},true)">削除</button><button class="btn ghost" onclick="printKarte(${data.id})">🖨️ PDF / 印刷</button>` : ''}<span class="spacer"></span>
       <button class="btn ghost" onclick="closeModal()">キャンセル</button><button class="btn" id="k-save">${editing ? '保存' : '登録'}</button></div>`, true);
 
   // 音声入力（メモ＋各自由記入欄）
@@ -1186,6 +1186,69 @@ function karteForm(data = {}) {
 }
 window.editKarte = async (id) => { const k = await api.get('/api/kartes/' + id); karteForm(k); };
 window.delKarte = async (id, fromModal) => { if (confirm('このカルテを削除しますか？')) { await api.del('/api/kartes/' + id); if (fromModal) closeModal(); toast('削除しました'); navigate('karte'); } };
+
+/* ---- 帳票出力（PDF/印刷）：新ウィンドウに印刷用HTMLを書き出し、ブラウザの印刷→PDF保存 ---- */
+function printWindow(title, bodyHtml) {
+  const w = window.open('', '_blank');
+  if (!w) { toast('ポップアップがブロックされました。許可してください', '⚠️'); return; }
+  w.document.write(`<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>${esc(title)}</title>
+    <style>
+      body{font-family:"Yu Gothic","Hiragino Sans","Noto Sans JP",sans-serif;max-width:760px;margin:30px auto;line-height:1.65;color:#222;padding:0 16px}
+      h1{font-size:20px;border-bottom:2px solid #4f46e5;padding-bottom:6px;margin:0 0 6px}
+      h2{font-size:14px;margin:16px 0 6px;color:#4338ca}
+      .meta{color:#666;font-size:12px;margin:0 0 14px}
+      table{width:100%;border-collapse:collapse;margin:4px 0}
+      table.grid td{border:1px solid #ccc;padding:6px 8px;font-size:12.5px;vertical-align:top}
+      .sec{font-size:13px;font-weight:700;color:#4338ca;margin:16px 0 4px;border-bottom:1px solid #dcdfea;padding-bottom:3px}
+      table.kv td{border:1px solid #dde;padding:5px 8px;font-size:12px;vertical-align:top}
+      table.kv td.l{background:#f5f6fb;width:38%;color:#555}
+      .verdict{font-weight:700;background:#eef0ff;padding:8px 12px;border-radius:6px;display:inline-block;margin-top:8px}
+      .print-btn{position:fixed;top:12px;right:12px;padding:8px 16px;background:#4f46e5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px}
+      @media print{body{margin:0}.print-btn{display:none}}
+    </style></head><body>
+    <button class="print-btn" onclick="window.print()">🖨️ 印刷 / PDF保存</button>
+    ${bodyHtml}</body></html>`);
+  w.document.close();
+  setTimeout(() => { try { w.print(); } catch (e) {} }, 500);
+}
+
+window.printHap = async (id) => {
+  const h = await api.get('/api/happiness/' + id);
+  const ans = h.answers || {};
+  const n = Object.values(ans).filter(v => v === 'no').length;
+  const rows = HAPPINESS_QUESTIONS.map((q, i) => {
+    const v = ans[q.id];
+    return `<tr><td>${i + 1}. ${esc(q.label)}${q.hint ? `<br><span style="color:#888;font-size:11px">${esc(q.hint)}</span>` : ''}</td>
+      <td style="text-align:center;width:64px;font-weight:700;color:${v === 'yes' ? '#15a06b' : '#bbb'}">${v === 'yes' ? '● YES' : 'YES'}</td>
+      <td style="text-align:center;width:64px;font-weight:700;color:${v === 'no' ? '#e11d48' : '#bbb'}">${v === 'no' ? '● NO' : 'NO'}</td></tr>`;
+  }).join('');
+  const verdict = n >= 3 ? `NO ${n}個 → 🏠 マイホーム見込み（ご提案へ）` : `NO ${n}個（3つ以上で見込み）`;
+  printWindow(`幸せ意識度チェック - ${h.title}`, `
+    <h1>将来の幸せ意識度チェック</h1>
+    <p class="meta">お客様: ${esc(h.title)}　／　顧客: ${esc(h.company_name || '—')}　／　作成: ${fmtDate(h.created_at)}</p>
+    <table class="grid"><tbody>${rows}</tbody></table>
+    <p class="verdict">判定：${esc(verdict)}</p>
+    ${h.memo ? `<h2>メモ</h2><p>${esc(h.memo).replace(/\n/g, '<br>')}</p>` : ''}`);
+};
+
+window.printKarte = async (id) => {
+  const k = await api.get('/api/kartes/' + id);
+  const D = k.data || {};
+  const val = (f) => {
+    if (f.type === 'checks') return esc((D[f.id] || []).join('、')) || '—';
+    if (f.type === 'ptext' || f.type === 'pradio') return `ご主人様: ${esc(D[f.id + '__h'] || '—')}　／　奥様: ${esc(D[f.id + '__w'] || '—')}`;
+    if (f.type === 'longtext') return esc(D[f.id] || '—').replace(/\n/g, '<br>');
+    return esc(D[f.id] || '—');
+  };
+  const secs = KARTE_SCHEMA.map(s => `
+    <div class="sec">${esc(s.sec)}</div>
+    <table class="kv"><tbody>${s.fields.map(f => `<tr><td class="l">${esc(f.label)}</td><td>${val(f)}</td></tr>`).join('')}</tbody></table>`).join('');
+  printWindow(`ライフメイクカルテ - ${k.title}`, `
+    <h1>ライフメイクカルテ</h1>
+    <p class="meta">お客様: ${esc(k.title)}　／　顧客: ${esc(k.company_name || '—')}　／　作成: ${fmtDate(k.created_at)}</p>
+    ${D._voice_memo ? `<h2>聞き取りメモ</h2><p>${esc(D._voice_memo).replace(/\n/g, '<br>')}</p>` : ''}
+    ${secs}`);
+};
 
 /* =========================================================================
    音声入力 (Web Speech API)

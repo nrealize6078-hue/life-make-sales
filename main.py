@@ -1429,7 +1429,9 @@ def list_happiness():
 def get_happiness(check_id: int):
     conn = db.get_conn()
     try:
-        r = conn.execute("SELECT * FROM happiness_checks WHERE id=?", (check_id,)).fetchone()
+        r = conn.execute(
+            "SELECT h.*, co.name AS company_name FROM happiness_checks h "
+            "LEFT JOIN companies co ON h.company_id=co.id WHERE h.id=?", (check_id,)).fetchone()
         if not r:
             raise HTTPException(404, "見つかりません")
         d = dict(r)
@@ -1509,7 +1511,9 @@ def list_kartes():
 def get_karte(karte_id: int):
     conn = db.get_conn()
     try:
-        r = conn.execute("SELECT * FROM lifemake_kartes WHERE id=?", (karte_id,)).fetchone()
+        r = conn.execute(
+            "SELECT k.*, co.name AS company_name FROM lifemake_kartes k "
+            "LEFT JOIN companies co ON k.company_id=co.id WHERE k.id=?", (karte_id,)).fetchone()
         if not r:
             raise HTTPException(404, "見つかりません")
         d = dict(r)
