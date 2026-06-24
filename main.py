@@ -240,11 +240,19 @@ def rows_to_dicts(rows):
 # ============================================================
 class CompanyIn(BaseModel):
     name: str
+    customer_type: str = "btob"   # btob=法人 / btoc=個人
     industry: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
+    email: Optional[str] = None
     website: Optional[str] = None
     notes: Optional[str] = None
+
+
+class ProgressLogIn(BaseModel):
+    log_date: str
+    status: Optional[str] = None
+    note: Optional[str] = None
 
 
 class ContactIn(BaseModel):
@@ -509,7 +517,46 @@ def get_company(company_id: int):
             conn.execute("SELECT * FROM tasks WHERE company_id=? ORDER BY (status='完了'), created_at DESC", (company_id,)).fetchall())
         company["hearings"] = rows_to_dicts(
             conn.execute("SELECT id, title, created_at FROM hearing_sheets WHERE company_id=? ORDER BY created_at DESC", (company_id,)).fetchall())
+        company["progress"] = rows_to_dicts(
+            conn.execute("SELECT * FROM progress_logs WHERE company_id=? ORDER BY log_date DESC, id DESC", (company_id,)).fetchall())
         return company
+    finally:
+        conn.close()
+
+
+# ----- 顧客の進捗ログ（日付ごとの進捗状況） -----
+@app.get("/api/companies/{company_id}/progress")
+def list_progress_logs(company_id: int):
+    conn = db.get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM progress_logs WHERE company_id=? ORDER BY log_date DESC, id DESC", (company_id,)).fetchall()
+        return rows_to_dicts(rows)
+    finally:
+        conn.close()
+
+
+@app.post("/api/companies/{company_id}/progress")
+def add_progress_log(company_id: int, body: ProgressLogIn):
+    conn = db.get_conn()
+    try:
+        cur = conn.execute(
+            "INSERT INTO progress_logs (company_id, log_date, status, note, created_at) VALUES (?,?,?,?,?)",
+            (company_id, body.log_date, body.status, body.note, now_iso()),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/progress/{log_id}")
+def delete_progress_log(log_id: int):
+    conn = db.get_conn()
+    try:
+        conn.execute("DELETE FROM progress_logs WHERE id=?", (log_id,))
+        conn.commit()
+        return {"ok": True}
     finally:
         conn.close()
 
@@ -519,8 +566,10 @@ def create_company(body: CompanyIn):
     conn = db.get_conn()
     try:
         cur = conn.execute(
-            "INSERT INTO companies (name, industry, address, phone, website, notes, created_at) VALUES (?,?,?,?,?,?,?)",
-            (body.name, body.industry, body.address, body.phone, body.website, body.notes, now_iso()),
+            "INSERT INTO companies (name, customer_type, industry, address, phone, email, website, notes, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (body.name, body.customer_type or "btob", body.industry, body.address, body.phone,
+             body.email, body.website, body.notes, now_iso()),
         )
         conn.commit()
         return {"id": cur.lastrowid}
@@ -533,8 +582,9 @@ def update_company(company_id: int, body: CompanyIn):
     conn = db.get_conn()
     try:
         conn.execute(
-            "UPDATE companies SET name=?, industry=?, address=?, phone=?, website=?, notes=? WHERE id=?",
-            (body.name, body.industry, body.address, body.phone, body.website, body.notes, company_id),
+            "UPDATE companies SET name=?, customer_type=?, industry=?, address=?, phone=?, email=?, website=?, notes=? WHERE id=?",
+            (body.name, body.customer_type or "btob", body.industry, body.address, body.phone,
+             body.email, body.website, body.notes, company_id),
         )
         conn.commit()
         return {"ok": True}
