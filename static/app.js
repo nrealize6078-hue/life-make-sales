@@ -880,6 +880,314 @@ window.scoreModule = (moduleId) => {
 };
 
 /* =========================================================================
+   ⑧ 幸せ意識度チェック（飛込・1回目アンケート）
+   ========================================================================= */
+const HAPPINESS_QUESTIONS = [
+  { id: 'q1', label: '将来の「ライフイベント資金」、もう十分に準備できていますか？', hint: '婚活・結婚・育児・教育' },
+  { id: 'q2', label: '貯金、今のままで十分ですか？', hint: '' },
+  { id: 'q3', label: '今の住環境に不満はまったくないですか？', hint: '広さ・遮音性・収納' },
+  { id: 'q4', label: '万が一のとき、金銭面の心配はありませんか？', hint: '生命保険' },
+  { id: 'q5', label: '老後に向けた資金や住まい、もう準備できていますか？', hint: '投資信託' },
+  { id: 'q6', label: '健康のために、具体的な対策をしていますか？', hint: '' },
+  { id: 'q7', label: '巨大地震の備え、ちゃんとできていますか？', hint: '耐震等級・ライフライン・食料の備蓄' },
+];
+
+VIEWS.happiness = async function () {
+  $('#topbar-actions').innerHTML = `<button class="btn" id="new-hap">＋ 新規チェック</button>`;
+  $('#new-hap').onclick = () => happinessForm();
+  window._haps = await api.get('/api/happiness');
+  $('#view').innerHTML = `
+    <div class="panel">
+      <div class="toolbar"><div class="search"><span class="si">🔍</span><input id="hap-search" placeholder="お客様名・顧客で検索…"></div></div>
+      <p class="muted" style="margin:4px 0 12px;font-size:12.5px">飛込・初回接触で使う7問のYES/NOチェック。<b>NOが3つ以上で「マイホーム見込み」</b>と判定します。</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>タイトル</th><th>顧客</th><th>NO数</th><th>判定</th><th>作成日</th><th></th></tr></thead>
+        <tbody id="hap-tbody"></tbody>
+      </table></div>
+    </div>`;
+  $('#hap-search').oninput = renderHaps;
+  renderHaps();
+};
+function hapVerdict(n) {
+  return n >= 3 ? `<span class="badge green">マイホーム見込み ◎</span>` : `<span class="badge gray">継続フォロー</span>`;
+}
+function renderHaps() {
+  const q = ($('#hap-search').value || '').toLowerCase();
+  const rows = window._haps.filter(h => !q || (h.title || '').toLowerCase().includes(q) || (h.company_name || '').toLowerCase().includes(q)).map(h => `
+    <tr>
+      <td><span class="list-link" onclick="editHap(${h.id})">${esc(h.title)}</span></td>
+      <td>${esc(h.company_name) || '<span class="muted">—</span>'}</td>
+      <td><b>${h.no_count}</b> / 7</td>
+      <td>${hapVerdict(h.no_count)}</td>
+      <td class="nowrap">${fmtDate(h.created_at)}</td>
+      <td class="right"><button class="icon-btn" onclick="delHap(${h.id})">🗑</button></td>
+    </tr>`).join('');
+  $('#hap-tbody').innerHTML = rows || emptyRow(6, 'まだありません', '🌟');
+}
+
+function happinessForm(data = {}) {
+  const editing = !!data.id;
+  const ans = Object.assign({}, data.answers || {});
+  const qHtml = HAPPINESS_QUESTIONS.map(q => `
+    <div class="hq">
+      <div class="q">${q.label}${q.hint ? `<small>${q.hint}</small>` : ''}</div>
+      <div class="hbtns" data-qid="${q.id}">
+        <button type="button" class="hbtn ${ans[q.id] === 'yes' ? 'on-yes' : ''}" data-v="yes">YES</button>
+        <button type="button" class="hbtn ${ans[q.id] === 'no' ? 'on-no' : ''}" data-v="no">NO</button>
+      </div>
+    </div>`).join('');
+  openModal(editing ? '幸せ意識度チェック（編集）' : '幸せ意識度チェック（新規）', `
+    <div class="grid2">
+      <div class="field"><label>タイトル / お客様名 *</label><input id="hap-title" value="${esc(data.title)}" placeholder="例）山田様（飛込）"></div>
+      <div class="field"><label>顧客企業</label><select id="hap-company">${companyOptions(data.company_id)}</select></div>
+    </div>
+    <div id="hap-verdict" class="verdict-box"></div>
+    ${qHtml}
+    <div class="field" style="margin-top:6px">
+      <div class="field-row-mic"><label>メモ</label><button type="button" class="mic-btn" id="mic-hap">🎤</button></div>
+      <textarea id="hap-memo" placeholder="気づき・反応など">${esc(data.memo)}</textarea>
+    </div>
+    <div class="form-actions">${editing ? `<button class="btn danger" onclick="delHap(${data.id},true)">削除</button>` : ''}<span class="spacer"></span>
+      <button class="btn ghost" onclick="closeModal()">キャンセル</button><button class="btn" id="hap-save">${editing ? '保存' : '登録'}</button></div>`);
+
+  const updateVerdict = () => {
+    const n = Object.values(ans).filter(v => v === 'no').length;
+    const box = $('#hap-verdict');
+    box.style.background = n >= 3 ? 'var(--green-soft)' : '#eef1f6';
+    box.style.color = n >= 3 ? 'var(--green)' : 'var(--muted)';
+    box.innerHTML = n >= 3 ? `NO ${n}個 → 🏠 マイホーム見込み（提案へ）` : `NO ${n}個（3つ以上で見込み）`;
+  };
+  $$('.hbtns').forEach(g => {
+    const qid = g.dataset.qid;
+    $$('.hbtn', g).forEach(b => b.onclick = () => {
+      ans[qid] = (ans[qid] === b.dataset.v) ? '' : b.dataset.v; // 再クリックで解除
+      $$('.hbtn', g).forEach(x => x.classList.remove('on-yes', 'on-no'));
+      if (ans[qid] === 'yes') b.classList.add('on-yes');
+      if (ans[qid] === 'no') b.classList.add('on-no');
+      updateVerdict();
+    });
+  });
+  updateVerdict();
+  setupMic('mic-hap', null, (t) => { const m = $('#hap-memo'); m.value = (m.value ? m.value + ' ' : '') + t; }, true);
+
+  $('#hap-save').onclick = async () => {
+    const title = $('#hap-title').value.trim();
+    if (!title) { toast('タイトルを入力してください', '✏️'); return; }
+    const body = { title, company_id: $('#hap-company').value || null, answers: ans, memo: $('#hap-memo').value };
+    if (editing) await api.put('/api/happiness/' + data.id, body); else await api.post('/api/happiness', body);
+    closeModal(); toast('保存しました'); navigate('happiness');
+  };
+}
+window.editHap = async (id) => { const h = await api.get('/api/happiness/' + id); happinessForm(h); };
+window.delHap = async (id, fromModal) => { if (confirm('このチェックを削除しますか？')) { await api.del('/api/happiness/' + id); if (fromModal) closeModal(); toast('削除しました'); navigate('happiness'); } };
+
+/* =========================================================================
+   ⑨ ライフメイクカルテ（2回目アンケート・全項目）
+   ========================================================================= */
+const KARTE_SCHEMA = [
+  { sec: '基本情報', fields: [
+    { id: 'name', label: 'お名前', type: 'text' },
+    { id: 'address', label: '住所', type: 'text' },
+    { id: 'age', label: '年齢', type: 'num' },
+    { id: 'family', label: '現在の家族構成', type: 'text', hint: '人数・続柄' },
+    { id: 'birth', label: '生年月日', type: 'text' },
+    { id: 'staff', label: '担当', type: 'text' },
+    { id: 'date', label: '実施日', type: 'date' },
+    { id: 'partner', label: '彼女・結婚予定', type: 'text', hint: 'いる/募集中・結婚予定 ある/まだない' },
+  ]},
+  { sec: '住まい・家賃', fields: [
+    { id: 'rent', label: '家賃(円)', type: 'num' },
+    { id: 'rent_self', label: '自己負担(円)', type: 'num' },
+    { id: 'parking', label: '駐車場', type: 'radio', opts: ['込', '別', 'なし'] },
+    { id: 'layout', label: '間取り(広さ)', type: 'text' },
+    { id: 'live_years', label: '居住年数', type: 'text' },
+    { id: 'satisfy', label: '現在のお住まい', type: 'radio', opts: ['満足', '不満足'] },
+    { id: 'prev_home', label: 'その前は？', type: 'text' },
+  ]},
+  { sec: '生命保険', fields: [
+    { id: 'ins_join', label: '保険加入', type: 'radio', opts: ['有', '無'] },
+    { id: 'ins_type', label: '種類', type: 'checks', opts: ['定期', '終身', '養老', '医療', 'ガン'] },
+    { id: 'ins_fee', label: '月額保険料(円)', type: 'num' },
+  ]},
+  { sec: '勤務先（ご主人様／奥様）', fields: [
+    { id: 'work_name', label: '勤務先名', type: 'ptext' },
+    { id: 'work_emp', label: '雇用形態', type: 'ptext', hint: '正社員 等' },
+    { id: 'work_cap', label: '資本金', type: 'ptext' },
+    { id: 'work_empnum', label: '社員数', type: 'ptext' },
+    { id: 'work_years', label: '勤続/社会人年数', type: 'ptext' },
+    { id: 'work_place', label: '勤務地', type: 'ptext' },
+    { id: 'commute', label: '通勤方法・時間', type: 'ptext', hint: '車/徒歩/自転車/バス/電車・分' },
+    { id: 'tenkin', label: '転勤', type: 'pradio', opts: ['あり', 'なし'] },
+    { id: 'tenkin_hope', label: '転勤希望', type: 'pradio', opts: ['あり', 'なし'] },
+    { id: 'tenshoku', label: '転職希望', type: 'ptext', hint: '○/×・その前は？' },
+  ]},
+  { sec: '給与・貯蓄・借入（ご主人様／奥様）', fields: [
+    { id: 'salary', label: '月手取り(万円)', type: 'ptext' },
+    { id: 'income', label: '年収(万円)', type: 'ptext' },
+    { id: 'kakeibo', label: '家計簿', type: 'pradio', opts: ['付けてる', '付けてない'] },
+    { id: 'save_month', label: '毎月貯蓄額', type: 'ptext' },
+    { id: 'save_total', label: '貯蓄額総額(万円)', type: 'ptext' },
+    { id: 'gamble', label: 'ギャンブル', type: 'pradio', opts: ['無', '有'] },
+    { id: 'gamble_type', label: 'ギャンブル種類', type: 'ptext', hint: 'パチンコ/公営 等' },
+    { id: 'loan_count', label: '借入件数', type: 'ptext' },
+    { id: 'card_count', label: 'クレジットカード(枚)', type: 'ptext' },
+    { id: 'loan_from', label: '借入先', type: 'ptext' },
+    { id: 'loan_type', label: '種類', type: 'ptext' },
+    { id: 'loan_rest', label: '残債', type: 'ptext' },
+    { id: 'loan_years', label: '残年数', type: 'ptext' },
+    { id: 'loan_monthly', label: '月々返済', type: 'ptext' },
+    { id: 'loan_delay', label: '遅延', type: 'ptext' },
+    { id: 'guarantor', label: '保証人', type: 'ptext' },
+  ]},
+  { sec: '生活（ご主人様／奥様）', fields: [
+    { id: 'kitchen', label: '自炊（週 日）', type: 'ptext' },
+    { id: 'laundry', label: '洗濯（週 回）', type: 'ptext' },
+    { id: 'bath', label: 'お風呂', type: 'pradio', opts: ['浴槽に入る', 'シャワーのみ'] },
+    { id: 'bath_long', label: '入浴', type: 'pradio', opts: ['長い', '早い'] },
+    { id: 'disaster', label: '災害対策', type: 'pradio', opts: ['あり', 'なし'] },
+    { id: 'health', label: '健康対策', type: 'pradio', opts: ['あり', 'なし'] },
+    { id: 'hobby', label: '趣味', type: 'ptext' },
+  ]},
+  { sec: '出身・実家・相続（ご主人様／奥様）', fields: [
+    { id: 'birthplace', label: '出身地', type: 'ptext' },
+    { id: 'parent_home', label: '実家の住まい', type: 'pradio', opts: ['持家一戸建て', '借家', 'マンション', '無し'] },
+    { id: 'parent_age', label: '実家 築年数', type: 'ptext' },
+    { id: 'care', label: '介護', type: 'pradio', opts: ['有', '無'] },
+    { id: 'souzoku', label: '相続', type: 'pradio', opts: ['相談済み', '相談無し'] },
+    { id: 'siblings', label: '兄弟姉妹', type: 'ptext', hint: '一人っ子/兄/弟/姉/妹' },
+  ]},
+  { sec: '固定費', fields: [
+    { id: 'fc_rent', label: '家賃(円)', type: 'num' },
+    { id: 'fc_ins', label: '生命保険料 定期(円)', type: 'num' },
+    { id: 'fc_tax', label: '税金(円)', type: 'num' },
+    { id: 'fc_util', label: '電気代・返済等(円)', type: 'num' },
+    { id: 'fc_total', label: '合計(円・自動計算)', type: 'num' },
+    { id: 'fc_ratio', label: '手取りに対する固定費の割合', type: 'text' },
+  ]},
+  { sec: '老後・マイホーム', fields: [
+    { id: 'oldage_home', label: '老後の住まい', type: 'radio', opts: ['実家', '賃貸', 'マイホーム購入'] },
+    { id: 'oldage_note', label: 'マイホーム購入以外の方、具体的には？', type: 'longtext' },
+    { id: 'buy_age', label: 'マイホーム購入は何歳？', type: 'num' },
+    { id: 'buy_after', label: '何年後？', type: 'num' },
+    { id: 'buy_reason_later', label: '先にする理由は？', type: 'longtext' },
+    { id: 'buy_problem', label: '今マイホームを持つと不都合は？', type: 'radio', opts: ['ない', 'ある'] },
+    { id: 'buy_problem_reason', label: '不都合の理由', type: 'longtext' },
+  ]},
+  { sec: '人生診断（4大リスク・該当にチェック）', fields: [
+    { id: 'save_max_now', label: '「今」出来る月々の最大貯蓄額(円)', type: 'num' },
+    { id: 'save_at60', label: '「60歳」の貯蓄額(万円)', type: 'num' },
+    { id: 'risk_oldage', label: '①老後対策', type: 'checks', opts: ['老後貯蓄の余裕がない', '資産形成が出来ていない', '老後の経費削減が出来ていない', '老後の住居確保が出来ていない'] },
+    { id: 'risk_emergency', label: '②万が一対策', type: 'checks', opts: ['無駄な支払いが多く必要保障が足りない', '遺族の住居確保が出来ていない'] },
+    { id: 'risk_health', label: '③健康対策', type: 'checks', opts: ['自炊環境が弱い', '免疫力UP環境が弱い'] },
+    { id: 'risk_disaster', label: '④災害対策', type: 'checks', opts: ['地震・火災・台風に弱い', 'ライフラインの確保が出来ていない', '食料備蓄と防災用品の保管スペースがない', '資金確保が難しい'] },
+  ]},
+];
+const KARTE_LONGTEXT = [];
+KARTE_SCHEMA.forEach(s => s.fields.forEach(f => { if (f.type === 'longtext') KARTE_LONGTEXT.push(f.id); }));
+
+VIEWS.karte = async function () {
+  $('#topbar-actions').innerHTML = `<button class="btn" id="new-karte">＋ 新規カルテ</button>`;
+  $('#new-karte').onclick = () => karteForm();
+  window._kartes = await api.get('/api/kartes');
+  $('#view').innerHTML = `
+    <div class="panel">
+      <div class="toolbar"><div class="search"><span class="si">🔍</span><input id="karte-search" placeholder="お客様名・顧客で検索…"></div></div>
+      <p class="muted" style="margin:4px 0 12px;font-size:12.5px">2回目面談で使う詳細カルテ。家計・住環境・保険・貯蓄・老後・マイホーム計画などを聞き取り記録します（各自由記入欄は🎤音声入力対応）。</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>タイトル</th><th>顧客</th><th>作成日</th><th></th></tr></thead>
+        <tbody id="karte-tbody"></tbody>
+      </table></div>
+    </div>`;
+  $('#karte-search').oninput = renderKartes;
+  renderKartes();
+};
+function renderKartes() {
+  const q = ($('#karte-search').value || '').toLowerCase();
+  const rows = window._kartes.filter(k => !q || (k.title || '').toLowerCase().includes(q) || (k.company_name || '').toLowerCase().includes(q)).map(k => `
+    <tr>
+      <td><span class="list-link" onclick="editKarte(${k.id})">${esc(k.title)}</span></td>
+      <td>${esc(k.company_name) || '<span class="muted">—</span>'}</td>
+      <td class="nowrap">${fmtDate(k.created_at)}</td>
+      <td class="right"><button class="icon-btn" onclick="delKarte(${k.id})">🗑</button></td>
+    </tr>`).join('');
+  $('#karte-tbody').innerHTML = rows || emptyRow(4, 'まだありません', '📋');
+}
+
+function _kfield(f, D) {
+  const v = (id) => esc(D[id] == null ? '' : D[id]);
+  const hintHtml = f.hint ? ` <span class="muted" style="font-weight:400;font-size:11px">${f.hint}</span>` : '';
+  if (f.type === 'ptext') {
+    return `<div class="field"><label>${f.label}${hintHtml}</label><div class="grid2">
+      <input data-fid="${f.id}__h" placeholder="ご主人様" value="${v(f.id + '__h')}">
+      <input data-fid="${f.id}__w" placeholder="奥様" value="${v(f.id + '__w')}"></div></div>`;
+  }
+  if (f.type === 'pradio') {
+    const sel = (suf, ph) => `<select data-fid="${f.id}${suf}"><option value="">${ph}…</option>${f.opts.map(o => `<option ${D[f.id + suf] === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
+    return `<div class="field"><label>${f.label}</label><div class="grid2">${sel('__h', 'ご主人様')}${sel('__w', '奥様')}</div></div>`;
+  }
+  if (f.type === 'radio') {
+    return `<div class="field"><label>${f.label}</label><select data-fid="${f.id}"><option value="">—</option>${f.opts.map(o => `<option ${D[f.id] === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>`;
+  }
+  if (f.type === 'checks') {
+    return `<div class="field"><label>${f.label}</label><div class="chk-grid">${f.opts.map(o => `<label class="chk"><input type="checkbox" data-check="${f.id}" value="${esc(o)}" ${(D[f.id] || []).includes(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('')}</div></div>`;
+  }
+  if (f.type === 'longtext') {
+    return `<div class="field"><div class="field-row-mic"><label>${f.label}</label><button type="button" class="mic-btn" id="mic-k-${f.id}">🎤</button></div><textarea data-fid="${f.id}">${v(f.id)}</textarea></div>`;
+  }
+  const t = f.type === 'num' ? 'number' : (f.type === 'date' ? 'date' : 'text');
+  return `<div class="field"><label>${f.label}${hintHtml}</label><input type="${t}" data-fid="${f.id}" value="${v(f.id)}"></div>`;
+}
+
+function karteForm(data = {}) {
+  const editing = !!data.id;
+  const D = data.data || {};
+  const secHtml = KARTE_SCHEMA.map(s => {
+    const simple = !s.fields.some(f => ['ptext', 'pradio', 'checks', 'longtext'].includes(f.type));
+    return `<div class="modal-section-title">${s.sec}</div>
+      <div${simple ? ' class="grid2"' : ''}>${s.fields.map(f => _kfield(f, D)).join('')}</div>`;
+  }).join('');
+  openModal(editing ? 'ライフメイクカルテ（編集）' : 'ライフメイクカルテ（新規）', `
+    <div class="grid2">
+      <div class="field"><label>タイトル / お客様名 *</label><input id="k-title" value="${esc(data.title)}" placeholder="例）山田様 ライフメイクカルテ"></div>
+      <div class="field"><label>顧客企業</label><select id="k-company">${companyOptions(data.company_id)}</select></div>
+    </div>
+    <div class="field"><label>関連商談</label><select id="k-deal">${dealOptions(data.deal_id)}</select></div>
+    <div class="voice-box">
+      <div class="field-row-mic"><div><div class="vb-title">🎤 音声メモ（聞き取りメモ）</div><div class="vb-desc" style="margin:0">面談中に話した内容をそのまま記録。各項目は下のフォームに入力します。</div></div>
+        <button type="button" class="mic-btn" id="mic-kmemo">🎤 録音開始</button></div>
+      <textarea data-fid="_voice_memo" rows="3" placeholder="（聞き取りメモ）">${esc(D._voice_memo)}</textarea>
+    </div>
+    ${secHtml}
+    <div class="form-actions">${editing ? `<button class="btn danger" onclick="delKarte(${data.id},true)">削除</button>` : ''}<span class="spacer"></span>
+      <button class="btn ghost" onclick="closeModal()">キャンセル</button><button class="btn" id="k-save">${editing ? '保存' : '登録'}</button></div>`, true);
+
+  // 音声入力（メモ＋各自由記入欄）
+  setupMic('mic-kmemo', null, (t) => { const m = $('[data-fid="_voice_memo"]'); m.value = (m.value ? m.value + ' ' : '') + t; }, true);
+  KARTE_LONGTEXT.forEach(id => setupMic('mic-k-' + id, null, (t) => { const m = $(`[data-fid="${id}"]`); if (m) m.value = (m.value ? m.value + ' ' : '') + t; }, true));
+
+  // 固定費 合計の自動計算
+  const sumFixed = () => {
+    const g = (id) => Number(($(`[data-fid="${id}"]`) || {}).value) || 0;
+    const t = g('fc_rent') + g('fc_ins') + g('fc_tax') + g('fc_util');
+    const el = $('[data-fid="fc_total"]'); if (el) el.value = t || '';
+  };
+  ['fc_rent', 'fc_ins', 'fc_tax', 'fc_util'].forEach(id => { const el = $(`[data-fid="${id}"]`); if (el) el.oninput = sumFixed; });
+
+  $('#k-save').onclick = async () => {
+    const title = $('#k-title').value.trim();
+    if (!title) { toast('タイトルを入力してください', '✏️'); return; }
+    const out = {};
+    $$('#modal-body [data-fid]').forEach(el => { const val = (el.value || '').trim(); if (val !== '') out[el.dataset.fid] = val; });
+    $$('#modal-body [data-check]').forEach(cb => { if (cb.checked) { const k = cb.dataset.check; (out[k] = out[k] || []).push(cb.value); } });
+    const body = { title, company_id: $('#k-company').value || null, deal_id: $('#k-deal').value || null, data: out };
+    if (editing) await api.put('/api/kartes/' + data.id, body); else await api.post('/api/kartes', body);
+    closeModal(); toast('保存しました'); navigate('karte');
+  };
+}
+window.editKarte = async (id) => { const k = await api.get('/api/kartes/' + id); karteForm(k); };
+window.delKarte = async (id, fromModal) => { if (confirm('このカルテを削除しますか？')) { await api.del('/api/kartes/' + id); if (fromModal) closeModal(); toast('削除しました'); navigate('karte'); } };
+
+/* =========================================================================
    音声入力 (Web Speech API)
    continuous=true で連続認識。確定テキストを onText に逐次渡す。
    ========================================================================= */

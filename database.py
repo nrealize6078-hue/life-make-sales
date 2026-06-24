@@ -209,6 +209,36 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- ①幸せ意識度チェック（飛込・1回目アンケート）
+CREATE TABLE IF NOT EXISTS happiness_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER,
+    contact_id INTEGER,
+    deal_id INTEGER,
+    title TEXT NOT NULL,
+    answers TEXT,        -- JSON {q1:'yes'|'no'|'', ...}
+    no_count INTEGER DEFAULT 0,
+    memo TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
+    FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL,
+    FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE SET NULL
+);
+
+-- ②ライフメイクカルテ（2回目アンケート・全項目をJSONで保持）
+CREATE TABLE IF NOT EXISTS lifemake_kartes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER,
+    contact_id INTEGER,
+    deal_id INTEGER,
+    title TEXT NOT NULL,
+    data TEXT,           -- JSON 全項目
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
+    FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL,
+    FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE SET NULL
+);
 """
 
 

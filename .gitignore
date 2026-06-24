@@ -19,9 +19,8 @@ _test_tone.wav
 # 作業・ビルド・検証用の一時物（別PCに持ち込まない）
 _docxbuild/
 node_modules/
-_qtest*.db
-_hstest.db
-_authtest.db
+_*.db
 _qtest_uploads*/
+_devpreview*
 *.pdf
 ~$*

@@ -1389,6 +1389,181 @@ def upsert_progress(body: ProgressIn):
 
 
 # ============================================================
+#  ①幸せ意識度チェック（飛込・1回目アンケート）
+# ============================================================
+class HappinessIn(BaseModel):
+    company_id: Optional[int] = None
+    contact_id: Optional[int] = None
+    deal_id: Optional[int] = None
+    title: str
+    answers: dict = {}        # {q1:'yes'|'no'|'', ...}
+    memo: Optional[str] = None
+
+
+def _no_count(answers: dict) -> int:
+    return sum(1 for v in (answers or {}).values() if v == "no")
+
+
+@app.get("/api/happiness")
+def list_happiness():
+    conn = db.get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT h.*, co.name AS company_name FROM happiness_checks h "
+            "LEFT JOIN companies co ON h.company_id=co.id ORDER BY h.created_at DESC"
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["answers"] = json.loads(d["answers"]) if d["answers"] else {}
+            except Exception:
+                d["answers"] = {}
+            out.append(d)
+        return out
+    finally:
+        conn.close()
+
+
+@app.get("/api/happiness/{check_id}")
+def get_happiness(check_id: int):
+    conn = db.get_conn()
+    try:
+        r = conn.execute("SELECT * FROM happiness_checks WHERE id=?", (check_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "見つかりません")
+        d = dict(r)
+        d["answers"] = json.loads(d["answers"]) if d["answers"] else {}
+        return d
+    finally:
+        conn.close()
+
+
+@app.post("/api/happiness")
+def create_happiness(body: HappinessIn):
+    conn = db.get_conn()
+    try:
+        cur = conn.execute(
+            "INSERT INTO happiness_checks (company_id, contact_id, deal_id, title, answers, no_count, memo, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (body.company_id, body.contact_id, body.deal_id, body.title,
+             json.dumps(body.answers, ensure_ascii=False), _no_count(body.answers), body.memo, now_iso()),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid, "no_count": _no_count(body.answers)}
+    finally:
+        conn.close()
+
+
+@app.put("/api/happiness/{check_id}")
+def update_happiness(check_id: int, body: HappinessIn):
+    conn = db.get_conn()
+    try:
+        conn.execute(
+            "UPDATE happiness_checks SET company_id=?, contact_id=?, deal_id=?, title=?, answers=?, no_count=?, memo=? WHERE id=?",
+            (body.company_id, body.contact_id, body.deal_id, body.title,
+             json.dumps(body.answers, ensure_ascii=False), _no_count(body.answers), body.memo, check_id),
+        )
+        conn.commit()
+        return {"ok": True, "no_count": _no_count(body.answers)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/happiness/{check_id}")
+def delete_happiness(check_id: int):
+    conn = db.get_conn()
+    try:
+        conn.execute("DELETE FROM happiness_checks WHERE id=?", (check_id,))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ============================================================
+#  ②ライフメイクカルテ（2回目アンケート・全項目JSON）
+# ============================================================
+class KarteIn(BaseModel):
+    company_id: Optional[int] = None
+    contact_id: Optional[int] = None
+    deal_id: Optional[int] = None
+    title: str
+    data: dict = {}
+
+
+@app.get("/api/kartes")
+def list_kartes():
+    conn = db.get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT k.id, k.title, k.company_id, k.deal_id, k.created_at, co.name AS company_name "
+            "FROM lifemake_kartes k LEFT JOIN companies co ON k.company_id=co.id ORDER BY k.created_at DESC"
+        ).fetchall()
+        return rows_to_dicts(rows)
+    finally:
+        conn.close()
+
+
+@app.get("/api/kartes/{karte_id}")
+def get_karte(karte_id: int):
+    conn = db.get_conn()
+    try:
+        r = conn.execute("SELECT * FROM lifemake_kartes WHERE id=?", (karte_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "見つかりません")
+        d = dict(r)
+        try:
+            d["data"] = json.loads(d["data"]) if d["data"] else {}
+        except Exception:
+            d["data"] = {}
+        return d
+    finally:
+        conn.close()
+
+
+@app.post("/api/kartes")
+def create_karte(body: KarteIn):
+    conn = db.get_conn()
+    try:
+        cur = conn.execute(
+            "INSERT INTO lifemake_kartes (company_id, contact_id, deal_id, title, data, created_at) VALUES (?,?,?,?,?,?)",
+            (body.company_id, body.contact_id, body.deal_id, body.title,
+             json.dumps(body.data, ensure_ascii=False), now_iso()),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+@app.put("/api/kartes/{karte_id}")
+def update_karte(karte_id: int, body: KarteIn):
+    conn = db.get_conn()
+    try:
+        conn.execute(
+            "UPDATE lifemake_kartes SET company_id=?, contact_id=?, deal_id=?, title=?, data=? WHERE id=?",
+            (body.company_id, body.contact_id, body.deal_id, body.title,
+             json.dumps(body.data, ensure_ascii=False), karte_id),
+        )
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/kartes/{karte_id}")
+def delete_karte(karte_id: int):
+    conn = db.get_conn()
+    try:
+        conn.execute("DELETE FROM lifemake_kartes WHERE id=?", (karte_id,))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ============================================================
 #  静的ファイル（フロントエンド）
 # ============================================================
 @app.get("/")
