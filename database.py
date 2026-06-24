@@ -226,6 +226,17 @@ CREATE TABLE IF NOT EXISTS happiness_checks (
     FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE SET NULL
 );
 
+-- 顧客の進捗ログ（日付ごとの進捗状況）
+CREATE TABLE IF NOT EXISTS progress_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    log_date TEXT NOT NULL,     -- YYYY-MM-DD
+    status TEXT,                -- 進捗の区分/見出し（例: 初回訪問, 提案, 契約）
+    note TEXT,                  -- 詳細メモ
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+);
+
 -- ②ライフメイクカルテ（2回目アンケート・全項目をJSONで保持）
 CREATE TABLE IF NOT EXISTS lifemake_kartes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -289,6 +300,12 @@ def _migrate(conn):
     _ensure_columns(conn, "companies", {"hubspot_id": "TEXT"})
     _ensure_columns(conn, "contacts", {"hubspot_id": "TEXT"})
     _ensure_columns(conn, "deals", {"hubspot_id": "TEXT"})
+
+    # CRM: 顧客区分(BtoB=法人 / BtoC=個人)とメールを追加
+    _ensure_columns(conn, "companies", {
+        "customer_type": "TEXT NOT NULL DEFAULT 'btob'",
+        "email": "TEXT",
+    })
 
     # 旧ステージの商談を新ステージへ移行
     for old, new in STAGE_MIGRATION.items():
