@@ -1,5 +1,5 @@
 @echo off
-chcp 65001 > /dev/null
+chcp 65001 > nul
 cd /d "%~dp0"
 echo ============================================================
 echo   ライフメイクセールス を インターネット公開します
@@ -20,5 +20,5 @@ echo   ログインパスワードは .env の APP_PASSWORD です
 echo   （公開をやめる時は、このウィンドウを閉じてください）
 echo ============================================================
 echo.
-cloudflared.exe tunnel --url http://localhost:8123 --no-autoupdate
+cloudflared.exe tunnel --url http://127.0.0.1:8123 --no-autoupdate
 pause
