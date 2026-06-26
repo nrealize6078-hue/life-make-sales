@@ -306,6 +306,8 @@ def _migrate(conn):
         "customer_type": "TEXT NOT NULL DEFAULT 'btob'",
         "email": "TEXT",
     })
+    # 面談: 同席者(ご家族など。個人面談向け)
+    _ensure_columns(conn, "meetings", {"attendees": "TEXT"})
 
     # 旧ステージの商談を新ステージへ移行
     for old, new in STAGE_MIGRATION.items():

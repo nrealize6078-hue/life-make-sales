@@ -81,7 +81,7 @@ async function refreshCache() {
   ]);
   CACHE = { companies, deals, contacts, stages };
 }
-const companyOptions = (sel) => `<option value="">（未選択）</option>` + CACHE.companies.map(c => `<option value="${c.id}" ${sel == c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+const companyOptions = (sel) => `<option value="">（未選択）</option>` + CACHE.companies.map(c => `<option value="${c.id}" ${sel == c.id ? 'selected' : ''}>${c.customer_type === 'btoc' ? '🧑 ' : '🏢 '}${esc(c.name)}</option>`).join('');
 const dealOptions = (sel) => `<option value="">（未選択）</option>` + CACHE.deals.map(d => `<option value="${d.id}" ${sel == d.id ? 'selected' : ''}>${esc(d.title)}</option>`).join('');
 const contactOptions = (sel) => `<option value="">（未選択）</option>` + CACHE.contacts.map(c => `<option value="${c.id}" ${sel == c.id ? 'selected' : ''}>${esc(c.name)}${c.company_name ? '（' + esc(c.company_name) + '）' : ''}</option>`).join('');
 const stageOptions = (sel) => CACHE.stages.map(s => `<option ${sel === s ? 'selected' : ''}>${s}</option>`).join('');
@@ -812,9 +812,10 @@ function meetingForm(data = {}) {
       <div class="field"><label>所要時間（分）</label><input id="m-dur" type="number" value="${data.duration_min || 60}"></div>
     </div>
     <div class="grid2">
-      <div class="field"><label>顧客企業</label><select id="m-company">${companyOptions(data.company_id)}</select></div>
-      <div class="field"><label>担当者</label><select id="m-contact">${contactOptions(data.contact_id)}</select></div>
+      <div class="field"><label>顧客（法人・個人）</label><select id="m-company">${companyOptions(data.company_id)}</select></div>
+      <div class="field" id="m-contact-wrap"><label>担当者（法人の場合）</label><select id="m-contact">${contactOptions(data.contact_id)}</select></div>
     </div>
+    <div class="field"><label>同席者（ご家族など）</label><input id="m-attendees" value="${esc(data.attendees)}" placeholder="例）ご主人様・奥様・お子様"></div>
     <div class="grid2">
       <div class="field"><label>形式</label><select id="m-type">${['オンライン', '対面', '電話'].map(t => `<option ${data.meeting_type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
       <div class="field"><label>状態</label><select id="m-status">${['予定', '実施済', '中止'].map(s => `<option ${data.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
@@ -834,6 +835,15 @@ function meetingForm(data = {}) {
 
   setupMic('mic-min', 'mic-min-hint', (text) => { const ta = $('#m-min'); ta.value = (ta.value ? ta.value + ' ' : '') + text; }, true);
 
+  // 個人(BtoC)の顧客を選んだら「担当者」欄は隠す（個人は本人が顧客のため不要）
+  const applyMtgType = () => {
+    const c = CACHE.companies.find(x => x.id == $('#m-company').value);
+    const isBtoc = c && c.customer_type === 'btoc';
+    $('#m-contact-wrap').style.display = isBtoc ? 'none' : '';
+    if (isBtoc) $('#m-contact').value = '';
+  };
+  $('#m-company').onchange = applyMtgType; applyMtgType();
+
   $('#m-extract').onclick = async () => {
     const text = $('#m-min').value.trim();
     if (!text) { toast('議事録が空です', '✏️'); return; }
@@ -844,7 +854,7 @@ function meetingForm(data = {}) {
   $('#m-save').onclick = async () => {
     const title = $('#m-title').value.trim();
     if (!title) { toast('件名を入力してください', '✏️'); return; }
-    const body = { title, scheduled_at: $('#m-dt').value || null, duration_min: Number($('#m-dur').value) || 60, company_id: $('#m-company').value || null, contact_id: $('#m-contact').value || null, deal_id: $('#m-deal').value || null, meeting_type: $('#m-type').value, status: $('#m-status').value, location: $('#m-loc').value, agenda: $('#m-agenda').value, minutes: $('#m-min').value };
+    const body = { title, scheduled_at: $('#m-dt').value || null, duration_min: Number($('#m-dur').value) || 60, company_id: $('#m-company').value || null, contact_id: ($('#m-contact-wrap').style.display === 'none' ? null : ($('#m-contact').value || null)), deal_id: $('#m-deal').value || null, meeting_type: $('#m-type').value, status: $('#m-status').value, location: $('#m-loc').value, agenda: $('#m-agenda').value, minutes: $('#m-min').value, attendees: $('#m-attendees').value };
     if (editing) await api.put('/api/meetings/' + data.id, body); else await api.post('/api/meetings', body);
     closeModal(); toast('保存しました'); navigate('meetings');
   };
