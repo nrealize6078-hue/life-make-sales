@@ -320,6 +320,7 @@ class MeetingIn(BaseModel):
     status: str = "予定"
     agenda: Optional[str] = None
     minutes: Optional[str] = None
+    attendees: Optional[str] = None   # 同席者（ご家族など・個人面談向け）
 
 
 class HearingIn(BaseModel):
@@ -885,10 +886,10 @@ def create_meeting(body: MeetingIn):
     conn = db.get_conn()
     try:
         cur = conn.execute(
-            "INSERT INTO meetings (company_id, contact_id, deal_id, title, scheduled_at, duration_min, location, meeting_type, status, agenda, minutes, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO meetings (company_id, contact_id, deal_id, title, scheduled_at, duration_min, location, meeting_type, status, agenda, minutes, attendees, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (body.company_id, body.contact_id, body.deal_id, body.title, body.scheduled_at,
-             body.duration_min, body.location, body.meeting_type, body.status, body.agenda, body.minutes, now_iso()),
+             body.duration_min, body.location, body.meeting_type, body.status, body.agenda, body.minutes, body.attendees, now_iso()),
         )
         conn.commit()
         return {"id": cur.lastrowid}
@@ -901,9 +902,9 @@ def update_meeting(meeting_id: int, body: MeetingIn):
     conn = db.get_conn()
     try:
         conn.execute(
-            "UPDATE meetings SET company_id=?, contact_id=?, deal_id=?, title=?, scheduled_at=?, duration_min=?, location=?, meeting_type=?, status=?, agenda=?, minutes=? WHERE id=?",
+            "UPDATE meetings SET company_id=?, contact_id=?, deal_id=?, title=?, scheduled_at=?, duration_min=?, location=?, meeting_type=?, status=?, agenda=?, minutes=?, attendees=? WHERE id=?",
             (body.company_id, body.contact_id, body.deal_id, body.title, body.scheduled_at,
-             body.duration_min, body.location, body.meeting_type, body.status, body.agenda, body.minutes, meeting_id),
+             body.duration_min, body.location, body.meeting_type, body.status, body.agenda, body.minutes, body.attendees, meeting_id),
         )
         conn.commit()
         return {"ok": True}
