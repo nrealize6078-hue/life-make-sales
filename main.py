@@ -77,7 +77,12 @@ async def _no_cache_static(request, call_next):
     if p == "/" or p.startswith("/static"):
         resp.headers["Cache-Control"] = "no-cache, must-revalidate"
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-    resp.headers.setdefault("X-Frame-Options", "DENY")
+    # lifemakepartners.net ポータル(lmp.html)からの iframe 埋め込みを許可。
+    # それ以外はデフォルトで DENY 相当(frame-ancestors 'self' 系のみ)。
+    resp.headers.setdefault(
+        "Content-Security-Policy",
+        "frame-ancestors 'self' https://lifemakepartners.net https://www.lifemakepartners.net",
+    )
     return resp
 
 
