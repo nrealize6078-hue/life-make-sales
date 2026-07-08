@@ -7,6 +7,9 @@
 .topbar-brand .tb-en {
   font-size: 15px; font-weight: 800; letter-spacing: 2px; color: var(--brand-ink, #4338ca);
 }
+.topbar-brand .tb-logo {
+  display: block; height: 34px; width: auto; margin: 3px auto 0; object-fit: contain;
+}
 .topbar-brand .tb-ja { font-size: 10.5px; font-weight: 600; letter-spacing: 1px; color: var(--muted, #7a869d); margin-top: 1px; }
 @media (max-width: 980px) { .topbar-brand { display: none; } }
 
