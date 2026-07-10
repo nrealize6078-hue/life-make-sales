@@ -34,6 +34,24 @@ const fmtDateTime = (s) => s ? String(s).replace('T', ' ').slice(0, 16) : '—';
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const truncate = (s, n) => { s = s || ''; return s.length > n ? s.slice(0, n) + '…' : s; };
 
+/* ---------- 金額（3桁ごとにカンマ） ---------- */
+// 数値をカンマ区切り文字列に（例: 3000000 → "3,000,000"）
+const fmtNum = (n) => { const s = String(n == null ? '' : n).replace(/[^\d.-]/g, ''); if (s === '' || s === '-') return ''; const x = Number(s); return isFinite(x) ? x.toLocaleString('ja-JP') : ''; };
+// カンマ付き文字列を数値に戻す（例: "3,000,000" → 3000000）
+const parseNum = (s) => { const x = Number(String(s == null ? '' : s).replace(/[^\d.-]/g, '')); return isFinite(x) ? x : 0; };
+// テキスト入力欄を「入力中も3桁ごとにカンマ」表示にする
+function bindMoneyInput(el) {
+  if (!el) return;
+  const format = () => {
+    const neg = /^-/.test(el.value.trim());
+    const digits = el.value.replace(/[^\d]/g, '');
+    el.value = digits ? (neg ? '-' : '') + Number(digits).toLocaleString('ja-JP') : '';
+  };
+  el.addEventListener('input', format);
+  el.addEventListener('blur', format);
+  format();
+}
+
 function dueInfo(due) {
   if (!due) return { cls: '', label: '—' };
   const t = todayStr();
@@ -328,7 +346,11 @@ VIEWS.crm = async function () {
 
   $('#view').innerHTML = `
     <div class="panel">
-      <div class="tabs">
+      <div class="crm-guide">
+        <div class="crm-guide-txt"><b>顧客の追加方法</b>　① 下のタブで <b>法人</b> か <b>個人</b> を選ぶ → ② 右の <b>「＋ 顧客を追加」</b> ボタンを押す → ③ 名前を入れて登録</div>
+        <button class="btn" id="add-company-main">＋ 顧客を追加</button>
+      </div>
+      <div class="tabs" style="margin-top:14px">
         <button class="tab" data-t="btob">🏢 法人（BtoB）</button>
         <button class="tab" data-t="btoc">🧑 個人（BtoC）</button>
       </div>
@@ -338,6 +360,7 @@ VIEWS.crm = async function () {
         <tbody id="crm-tbody"></tbody>
       </table></div>
     </div>`;
+  $('#add-company-main').onclick = () => companyForm({ customer_type: CRM_TAB });
   $$('.tab').forEach(b => {
     b.classList.toggle('active', b.dataset.t === CRM_TAB);
     b.onclick = () => { CRM_TAB = b.dataset.t; $$('.tab').forEach(x => x.classList.toggle('active', x.dataset.t === CRM_TAB)); renderCompanies(); };
@@ -358,8 +381,14 @@ function renderCompanies() {
       <td>${c.open_deals ? `<span class="badge blue">${c.open_deals}件</span>` : '<span class="muted">—</span>'}</td>
       <td class="right nowrap"><button class="btn sm ghost" onclick="showCompany(${c.id})">詳細</button> <button class="icon-btn" onclick="delCompany(${c.id})">🗑</button></td>
     </tr>`).join('');
-  $('#crm-tbody').innerHTML = rows || emptyRow(5, (CRM_TAB === 'btob' ? '法人' : '個人') + 'の顧客がまだありません', CRM_TAB === 'btob' ? '🏢' : '🧑');
+  $('#crm-tbody').innerHTML = rows || `<tr><td colspan="5" class="empty">
+      <span class="em-ico">${CRM_TAB === 'btob' ? '🏢' : '🧑'}</span>
+      ${(CRM_TAB === 'btob' ? '法人' : '個人')}の顧客がまだありません<br>
+      <button class="btn" style="margin-top:12px" onclick="newCompany('${CRM_TAB}')">＋ 最初の顧客を追加する</button>
+    </td></tr>`;
 }
+// 顧客追加フォームを開く（一覧の空状態・ガイドから呼び出し）
+window.newCompany = (type) => companyForm({ customer_type: type || CRM_TAB });
 
 window.showCompany = async (id) => {
   const c = await api.get('/api/companies/' + id);
@@ -617,7 +646,7 @@ function dealForm(data = {}) {
       <div class="field"><label>ステージ</label><select id="d-stage">${stageOptions(data.stage)}</select></div>
     </div>
     <div class="grid2">
-      <div class="field"><label>金額（円）</label><input id="d-amount" type="number" value="${data.amount || 0}"></div>
+      <div class="field"><label>金額（円）</label><input id="d-amount" type="text" inputmode="numeric" value="${fmtNum(data.amount || 0)}"></div>
       <div class="field"><label>確度（%）</label><input id="d-prob" type="number" min="0" max="100" value="${data.probability || 0}"></div>
     </div>
     <div class="grid2">
@@ -629,10 +658,11 @@ function dealForm(data = {}) {
     ${editing ? `<div class="chip-row" style="margin-bottom:14px"><button class="btn sm soft" onclick="quickMeeting(${data.company_id || 'null'})">＋ 面談設定</button><button class="btn sm soft" onclick="quickTask(${data.company_id || 'null'})">＋ タスク</button></div>` : ''}
     <div class="form-actions">${editing ? `<button class="btn danger" onclick="delDeal(${data.id})">削除</button>` : ''}<span class="spacer"></span>
       <button class="btn ghost" onclick="closeModal()">キャンセル</button><button class="btn" id="d-save">${editing ? '保存' : '登録'}</button></div>`);
+  bindMoneyInput($('#d-amount'));
   $('#d-save').onclick = async () => {
     const title = $('#d-title').value.trim();
     if (!title) { toast('商談名を入力してください', '✏️'); return; }
-    const body = { title, company_id: $('#d-company').value || null, stage: $('#d-stage').value, amount: Number($('#d-amount').value) || 0, probability: Number($('#d-prob').value) || 0, expected_close: $('#d-close').value || null, owner: $('#d-owner').value, notes: $('#d-notes').value };
+    const body = { title, company_id: $('#d-company').value || null, stage: $('#d-stage').value, amount: parseNum($('#d-amount').value), probability: Number($('#d-prob').value) || 0, expected_close: $('#d-close').value || null, owner: $('#d-owner').value, notes: $('#d-notes').value };
     if (editing) {
       await api.put('/api/deals/' + data.id, body);
       const presState = {};
@@ -1198,7 +1228,11 @@ function _kfield(f, D) {
   if (f.type === 'longtext') {
     return `<div class="field"><div class="field-row-mic"><label>${f.label}</label><button type="button" class="mic-btn" id="mic-k-${f.id}">🎤</button></div><textarea data-fid="${f.id}">${v(f.id)}</textarea></div>`;
   }
-  const t = f.type === 'num' ? 'number' : (f.type === 'date' ? 'date' : 'text');
+  if (f.type === 'num') {
+    // 金額など数値項目は3桁ごとにカンマ表示（保存時は数字だけに戻す）
+    return `<div class="field"><label>${f.label}${hintHtml}</label><input type="text" inputmode="numeric" class="money-input" data-fid="${f.id}" value="${esc(fmtNum(D[f.id]))}"></div>`;
+  }
+  const t = f.type === 'date' ? 'date' : 'text';
   return `<div class="field"><label>${f.label}${hintHtml}</label><input type="${t}" data-fid="${f.id}" value="${v(f.id)}"></div>`;
 }
 
@@ -1229,19 +1263,27 @@ function karteForm(data = {}) {
   setupMic('mic-kmemo', null, (t) => { const m = $('[data-fid="_voice_memo"]'); m.value = (m.value ? m.value + ' ' : '') + t; }, true);
   KARTE_LONGTEXT.forEach(id => setupMic('mic-k-' + id, null, (t) => { const m = $(`[data-fid="${id}"]`); if (m) m.value = (m.value ? m.value + ' ' : '') + t; }, true));
 
+  // 金額項目を3桁カンマ表示に
+  $$('#modal-body .money-input').forEach(bindMoneyInput);
+
   // 固定費 合計の自動計算
   const sumFixed = () => {
-    const g = (id) => Number(($(`[data-fid="${id}"]`) || {}).value) || 0;
+    const g = (id) => parseNum(($(`[data-fid="${id}"]`) || {}).value);
     const t = g('fc_rent') + g('fc_ins') + g('fc_tax') + g('fc_util');
-    const el = $('[data-fid="fc_total"]'); if (el) el.value = t || '';
+    const el = $('[data-fid="fc_total"]'); if (el) el.value = t ? t.toLocaleString('ja-JP') : '';
   };
-  ['fc_rent', 'fc_ins', 'fc_tax', 'fc_util'].forEach(id => { const el = $(`[data-fid="${id}"]`); if (el) el.oninput = sumFixed; });
+  ['fc_rent', 'fc_ins', 'fc_tax', 'fc_util'].forEach(id => { const el = $(`[data-fid="${id}"]`); if (el) el.addEventListener('input', sumFixed); });
 
   $('#k-save').onclick = async () => {
     const title = $('#k-title').value.trim();
     if (!title) { toast('タイトルを入力してください', '✏️'); return; }
     const out = {};
-    $$('#modal-body [data-fid]').forEach(el => { const val = (el.value || '').trim(); if (val !== '') out[el.dataset.fid] = val; });
+    $$('#modal-body [data-fid]').forEach(el => {
+      let val = (el.value || '').trim();
+      if (val === '') return;
+      if (el.classList.contains('money-input')) val = String(parseNum(val)); // カンマを外して数字だけ保存
+      out[el.dataset.fid] = val;
+    });
     $$('#modal-body [data-check]').forEach(cb => { if (cb.checked) { const k = cb.dataset.check; (out[k] = out[k] || []).push(cb.value); } });
     const body = { title, company_id: $('#k-company').value || null, deal_id: $('#k-deal').value || null, data: out };
     if (editing) await api.put('/api/kartes/' + data.id, body); else await api.post('/api/kartes', body);
@@ -1302,6 +1344,7 @@ window.printKarte = async (id) => {
     if (f.type === 'checks') return esc((D[f.id] || []).join('、')) || '—';
     if (f.type === 'ptext' || f.type === 'pradio') return `ご主人様: ${esc(D[f.id + '__h'] || '—')}　／　奥様: ${esc(D[f.id + '__w'] || '—')}`;
     if (f.type === 'longtext') return esc(D[f.id] || '—').replace(/\n/g, '<br>');
+    if (f.type === 'num') return fmtNum(D[f.id]) || '—';
     return esc(D[f.id] || '—');
   };
   const secs = KARTE_SCHEMA.map(s => `
@@ -1749,6 +1792,162 @@ function myPasswordForm() {
     catch (e) { toast(e.message, '⚠️'); }
   };
 }
+
+/* =========================================================================
+   ⑫ 使い方（チュートリアル）
+   各画面の役割と「入力方法」をまとめたヘルプ。読むだけの画面（データ取得不要）
+   ========================================================================= */
+// 入力方法の凡例タグ
+const GUIDE_TAG = {
+  type:  '<span class="guide-tag">⌨️ 手入力</span>',
+  pick:  '<span class="guide-tag">🔽 選択（プルダウン）</span>',
+  date:  '<span class="guide-tag">📅 日付を選ぶ</span>',
+  check: '<span class="guide-tag">☑ チェック</span>',
+  drag:  '<span class="guide-tag">🖱️ ドラッグで移動</span>',
+  voice: '<span class="guide-tag g-voice">🎤 音声入力できる</span>',
+  pdf:   '<span class="guide-tag g-pdf">🖨️ PDF / 印刷できる</span>',
+};
+// チュートリアル項目定義
+const GUIDE_SECTIONS = [
+  {
+    ico: '🏢', title: '顧客を追加する（いちばん大事）', nav: 'crm',
+    lead: '商談・面談・カルテなど、すべては「顧客」にひもづきます。まずは顧客の登録から。',
+    steps: [
+      '左メニューの <b>「🏢 CRM（顧客）」</b> を開きます。',
+      '画面の上にあるタブで <b>「🏢 法人（BtoB）」</b> か <b>「🧑 個人（BtoC）」</b> を選びます。',
+      '右上、または画面上部の青い <b>「＋ 顧客を追加」</b> ボタンを押します。（顧客がまだ0件のときは、一覧の中央に出る「＋ 最初の顧客を追加する」からでもOK）',
+      '<b>名前（企業名 / お客様氏名）</b> を入力します。ここだけは必須です。',
+      '必要に応じて 電話・メール・住所・メモを入れ、<b>「登録」</b> ボタンで完了。',
+    ],
+    tags: ['type', 'pick'],
+  },
+  {
+    ico: '📊', title: 'ダッシュボード', nav: 'dashboard',
+    lead: '顧客数・商談・売上予測などの数字と、今日のタスク・予定面談を一目で確認する画面です。',
+    steps: [
+      '入力する画面ではありません。数字カードや一覧をクリックすると、その詳細画面へ移動します。',
+    ],
+    tags: [],
+  },
+  {
+    ico: '✅', title: 'タスク抽出', nav: 'tasks',
+    lead: 'メモや議事録の文章から「やること」を自動で洗い出し、タスクとして登録できます。',
+    steps: [
+      '<b>「＋ タスク追加」</b> でひとつずつ登録するか、メモ欄に文章を貼り付け／🎤音声で話して <b>抽出</b> します。',
+      '抽出された候補にチェックを付け、関連顧客を選んで <b>一括登録</b> できます。',
+      '期限は日付欄から、優先度はプルダウンで選びます。',
+    ],
+    tags: ['type', 'voice', 'pick', 'date', 'check'],
+  },
+  {
+    ico: '📈', title: '商談フロー（カンバン）', nav: 'pipeline',
+    lead: '反響・予約 → 人生相談 → プレゼン → 交渉 → 契約 の進み具合をカードで管理します。',
+    steps: [
+      '<b>「＋ 商談追加」</b> で商談名・顧客・<b>金額（円）</b>・確度・契約予定日を入力します。',
+      '<b>金額欄は3桁ごとに自動でカンマ</b>が入ります（例：3,000,000）。数字だけ入れればOKです。',
+      'カードを <b>左右にドラッグ</b> すると、ステージ（段階）を移動できます。',
+      '契約にすると確度100%、失注にすると0%に自動でなります。',
+    ],
+    tags: ['type', 'pick', 'date', 'drag'],
+  },
+  {
+    ico: '🌟', title: '幸せ意識度チェック（1回目アンケート）', nav: 'happiness',
+    lead: '飛込・初回で使う7問のYES/NOアンケート。NOが3つ以上で「マイホーム見込み」と自動判定します。',
+    steps: [
+      '<b>「＋ 新規チェック」</b> からお客様を選び、各設問を <b>YES / NO</b> のボタンで回答します。',
+      'メモ欄に補足を記入できます。判定は自動表示。',
+      '完成したチェック表は <b>PDF / 印刷</b> で出力できます。',
+    ],
+    tags: ['pick', 'type', 'pdf'],
+  },
+  {
+    ico: '📋', title: 'ライフメイクカルテ（2回目アンケート）', nav: 'karte',
+    lead: '家計・住環境・保険・貯蓄・老後・マイホーム計画などを細かく記録する詳細カルテです。',
+    steps: [
+      '<b>「＋ 新規カルテ」</b> からお客様を選び、各項目を入力します。',
+      '<b>金額（円）の欄は3桁ごとに自動でカンマ</b>が付きます。固定費の合計は自動計算されます。',
+      '自由記入欄は 🎤 マイクボタンで <b>音声入力</b> できます。',
+      '完成したカルテは <b>PDF / 印刷</b> で出力できます。',
+    ],
+    tags: ['type', 'pick', 'check', 'voice', 'pdf'],
+  },
+  {
+    ico: '🎤', title: '人生相談カルテ', nav: 'hearing',
+    lead: '人生6大項目のヒアリング。話した内容をAIが各項目へ自動で振り分けます。',
+    steps: [
+      '<b>「＋ 新規カルテ」</b> からお客様を選びます。',
+      '🎤 マイクで話すと、内容が仕事・お金・健康などの項目へ自動で振り分けられます。',
+      '手入力での修正も可能。次にやることは、そのままタスクに登録できます。',
+    ],
+    tags: ['voice', 'type', 'pick'],
+  },
+  {
+    ico: '📅', title: '面談管理', nav: 'meetings',
+    lead: '面談の予約・議事録・実施状況を管理します。法人／個人どちらにも対応。',
+    steps: [
+      '<b>「＋ 面談予約」</b> で顧客・日時・形式・同席者などを入力します。',
+      '日時は日付＆時刻の入力欄から選びます。形式はプルダウンで選択。',
+      '議事録欄に内容を書くと、そこからタスクを抽出できます。',
+    ],
+    tags: ['pick', 'date', 'type'],
+  },
+  {
+    ico: '🎙️', title: 'AI議事録', nav: 'minutes',
+    lead: '面談の音声をアップロードすると、文字起こし → 議事録（要約・決定事項・次アクション）を自動生成します。',
+    steps: [
+      '<b>音声ファイルをアップロード</b>するか、テキストを貼り付けます。',
+      '自動で「処理中 → 文字起こし → 要約」と進みます。完了まで少し待ちます。',
+      '生成された次アクションは、ワンクリックでタスクに登録できます。',
+    ],
+    tags: ['type', 'pdf'],
+  },
+  {
+    ico: '🎓', title: 'クローザー育成', nav: 'training',
+    lead: 'トップクローザー研修のカリキュラムと、習得状況・理解度を管理します。',
+    steps: [
+      '各モジュールの状況（未着手／学習中／習得）を選んで進捗を記録します。',
+      '理解度の点数を入力して、育成の進み具合を可視化します。',
+    ],
+    tags: ['pick', 'type'],
+  },
+];
+
+VIEWS.guide = async function () {
+  $('#topbar-actions').innerHTML = '';
+  const cards = GUIDE_SECTIONS.map(s => `
+    <div class="guide-card">
+      <h3><span class="g-ico">${s.ico}</span>${esc(s.title)}
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn sm soft" onclick="navigate('${s.nav}')" style="font-weight:600">開く →</button>
+      </h3>
+      <p class="g-lead">${s.lead}</p>
+      <ol class="guide-steps">${s.steps.map(st => `<li>${st}</li>`).join('')}</ol>
+      ${s.tags.length ? `<div class="guide-tags">${s.tags.map(t => GUIDE_TAG[t]).join('')}</div>` : ''}
+    </div>`).join('');
+  $('#view').innerHTML = `
+    <div class="guide-wrap">
+      <div class="guide-intro">
+        <h2>📖 ライフメイクセールスの使い方</h2>
+        <p>各画面の役割と「入力のしかた」をまとめました。まずは <b>「顧客を追加する」</b> から始めるのがおすすめです。各カードの「開く →」でその画面へ移動できます。</p>
+      </div>
+      <div class="guide-tips">
+        <b>入力方法の見かた：</b>
+        ${GUIDE_TAG.type} … キーボードで文字・数字を入力／
+        ${GUIDE_TAG.pick} … 一覧から選ぶ／
+        ${GUIDE_TAG.date} … カレンダーから日付／
+        ${GUIDE_TAG.check} … 当てはまるものにチェック／
+        ${GUIDE_TAG.drag} … カードを掴んで移動／
+        ${GUIDE_TAG.voice} … マイクで話して入力／
+        ${GUIDE_TAG.pdf} … 印刷・PDF保存
+      </div>
+      ${cards}
+      <div class="guide-tips">
+        <b>💡 困ったときは：</b> 画面が狭いスマホでは、左上の <b>「☰」</b> からメニューを開けます。
+        金額の欄は数字だけ入力すれば、自動で <b>3桁ごとのカンマ</b>（例：1,000,000）が付きます。
+      </div>
+    </div>`;
+};
+window.navigate = navigate;
 
 /* ---- 起動 ---- */
 checkAuthAndStart();
