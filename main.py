@@ -1672,6 +1672,44 @@ def delete_karte(karte_id: int):
 
 
 # ============================================================
+#  アオ先生（lmp.html 埋め込み用・公開チャット窓口）
+#  注意: /api/ 配下ではないため _auth_gate の保護対象外＝ログイン不要で公開。
+#        濫用対策として ai_services/aisensei.py 側でレート制限・入力上限を実施。
+# ============================================================
+@app.get("/aisensei")
+def aisensei_page():
+    """アオの動作を単体で確認できるテスト用チャット画面。"""
+    return FileResponse(os.path.join(STATIC_DIR, "aisensei.html"))
+
+
+@app.get("/aisensei/chat")
+def aisensei_chat(request: Request, q: str = "", h: str = ""):
+    """アオ回答API。lmp.html の __aoAsk が期待する GET 契約に合わせる。
+       クエリ: q=質問, h=履歴JSON([{role,content}]) / 返り値: {ok, reply}。
+       失敗時は ok:false を返し、フロントは自動でローカルKBへフォールバックする。"""
+    from ai_services import aisensei
+    # リバースプロキシ(nginx等)経由の場合は X-Forwarded-For に実IPが入る
+    ip = ((request.headers.get("x-forwarded-for", "").split(",")[0].strip())
+          or (request.client.host if request.client else "unknown"))
+    if not aisensei.check_rate_limit(ip):
+        return JSONResponse({"ok": False, "error": "rate_limited"}, status_code=429)
+    history: List[dict] = []
+    if h:
+        try:
+            parsed = json.loads(h)
+            if isinstance(parsed, list):
+                history = parsed
+        except Exception:
+            history = []
+    try:
+        answer = aisensei.reply(q, history)
+    except aisensei.AISenseiError as e:
+        # キー未設定・空入力などは 200 + ok:false で穏当に返す（フロントはKBへ）
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=200)
+    return {"ok": True, "reply": answer}
+
+
+# ============================================================
 #  静的ファイル（フロントエンド）
 # ============================================================
 @app.get("/")
