@@ -1676,6 +1676,23 @@ def delete_karte(karte_id: int):
 #  注意: /api/ 配下ではないため _auth_gate の保護対象外＝ログイン不要で公開。
 #        濫用対策として ai_services/aisensei.py 側でレート制限・入力上限を実施。
 # ============================================================
+# アオを埋め込む静的サイト(lmp.html)のオリジン。ここからのクロスオリジン呼び出しのみ許可。
+_AISENSEI_ALLOWED_ORIGINS = {
+    "https://lifemakepartners.net",
+    "https://www.lifemakepartners.net",
+}
+
+
+def _aisensei_json(request: Request, payload: dict, status: int = 200) -> JSONResponse:
+    """/aisensei 専用の応答。許可オリジンにだけ CORS ヘッダを付ける（他機能には影響しない）。"""
+    resp = JSONResponse(payload, status_code=status)
+    origin = request.headers.get("origin", "")
+    if origin in _AISENSEI_ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+    return resp
+
+
 @app.get("/aisensei")
 def aisensei_page():
     """アオの動作を単体で確認できるテスト用チャット画面。"""
@@ -1692,7 +1709,7 @@ def aisensei_chat(request: Request, q: str = "", h: str = ""):
     ip = ((request.headers.get("x-forwarded-for", "").split(",")[0].strip())
           or (request.client.host if request.client else "unknown"))
     if not aisensei.check_rate_limit(ip):
-        return JSONResponse({"ok": False, "error": "rate_limited"}, status_code=429)
+        return _aisensei_json(request, {"ok": False, "error": "rate_limited"}, 429)
     history: List[dict] = []
     if h:
         try:
@@ -1705,8 +1722,8 @@ def aisensei_chat(request: Request, q: str = "", h: str = ""):
         answer = aisensei.reply(q, history)
     except aisensei.AISenseiError as e:
         # キー未設定・空入力などは 200 + ok:false で穏当に返す（フロントはKBへ）
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=200)
-    return {"ok": True, "reply": answer}
+        return _aisensei_json(request, {"ok": False, "error": str(e)}, 200)
+    return _aisensei_json(request, {"ok": True, "reply": answer}, 200)
 
 
 # ============================================================
