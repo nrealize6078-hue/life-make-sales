@@ -101,6 +101,17 @@ class LoginIn(BaseModel):
     password: str
 
 
+class SignupIn(BaseModel):
+    username: str
+    password: str
+    display_name: Optional[str] = None
+    code: str
+
+
+class RegisterCodeIn(BaseModel):
+    code: str
+
+
 class UserIn(BaseModel):
     username: str
     password: str
@@ -146,6 +157,43 @@ def auth_login(body: LoginIn, response: Response):
 def auth_logout(request: Request, response: Response):
     auth.revoke_session(request.cookies.get(_COOKIE))
     response.delete_cookie(_COOKIE)
+    return {"ok": True}
+
+
+# ----- 新規登録（登録コード方式） -----
+@app.get("/api/auth/signup_info")
+def signup_info():
+    """新規登録が有効か（＝登録コードが設定されているか）。"""
+    return {"signup_enabled": bool(auth.get_setting("register_code", "").strip())}
+
+
+@app.post("/api/auth/signup")
+def auth_signup(body: SignupIn, response: Response):
+    code = auth.get_setting("register_code", "").strip()
+    if not code:
+        raise HTTPException(400, "現在、新規登録は受け付けていません（管理者が登録コード未設定）")
+    if (body.code or "").strip() != code:
+        raise HTTPException(403, "登録コードが違います")
+    try:
+        uid = auth.create_user(body.username, body.password, role="member", display_name=body.display_name or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    token = auth.create_session(uid)
+    response.set_cookie(_COOKIE, token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * auth.SESSION_DAYS)
+    return {"ok": True}
+
+
+# ----- 登録コードの設定（管理者のみ） -----
+@app.get("/api/settings/register_code")
+def get_register_code(request: Request):
+    _require_admin(request)
+    return {"code": auth.get_setting("register_code", "")}
+
+
+@app.post("/api/settings/register_code")
+def set_register_code(body: RegisterCodeIn, request: Request):
+    _require_admin(request)
+    auth.set_setting("register_code", (body.code or "").strip())
     return {"ok": True}
 
 
