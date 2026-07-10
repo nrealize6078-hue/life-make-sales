@@ -209,3 +209,26 @@ def bootstrap(app_password: str):
 def auth_enabled() -> bool:
     """有効ユーザーが1人でも居れば認証ON。"""
     return count_users() > 0
+
+
+# ---------- アプリ設定（登録コード等） ----------
+def get_setting(key: str, default: str = "") -> str:
+    conn = db.get_conn()
+    try:
+        r = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+        return r["value"] if r and r["value"] is not None else default
+    finally:
+        conn.close()
+
+
+def set_setting(key: str, value: str):
+    conn = db.get_conn()
+    try:
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()

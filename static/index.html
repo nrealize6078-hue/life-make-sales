@@ -12,13 +12,25 @@
 <body>
   <!-- ログイン(認証有効時のみ表示) -->
   <div id="login-overlay" class="modal-overlay hidden">
-    <div class="modal" id="login-box" style="max-width:360px">
-      <div class="modal-head"><h2>🔒 ログイン</h2></div>
-      <div class="modal-body">
+    <div class="modal" id="login-box" style="max-width:380px">
+      <div class="modal-head"><h2 id="login-title">🔒 ログイン</h2></div>
+      <div class="modal-body" id="login-view">
         <div class="field"><label>ユーザー名</label><input id="login-user" type="text" autocomplete="username" placeholder="admin"></div>
         <div class="field"><label>パスワード</label><input id="login-pw" type="password" autocomplete="current-password"></div>
         <div class="form-actions"><button class="btn" id="login-btn" style="width:100%">ログイン</button></div>
         <div id="login-msg" class="voice-hint" style="color:#b91c1c"></div>
+        <div id="to-signup-wrap" class="hidden" style="text-align:center;margin-top:12px;font-size:13px">
+          アカウントをお持ちでない方は <a href="#" id="show-signup" style="color:#4338ca;font-weight:600">新規登録</a>
+        </div>
+      </div>
+      <div class="modal-body hidden" id="signup-view">
+        <div class="field"><label>ユーザー名（ログインID）*</label><input id="su-user" type="text" placeholder="例）tanaka"></div>
+        <div class="field"><label>表示名</label><input id="su-name" type="text" placeholder="例）田中 健"></div>
+        <div class="field"><label>パスワード（4文字以上）*</label><input id="su-pw" type="password"></div>
+        <div class="field"><label>登録コード *</label><input id="su-code" type="text" placeholder="管理者から共有されたコード"></div>
+        <div class="form-actions"><button class="btn" id="su-btn" style="width:100%">登録して開始</button></div>
+        <div id="su-msg" class="voice-hint" style="color:#b91c1c"></div>
+        <div style="text-align:center;margin-top:12px;font-size:13px"><a href="#" id="show-login" style="color:#4338ca;font-weight:600">ログインに戻る</a></div>
       </div>
     </div>
   </div>

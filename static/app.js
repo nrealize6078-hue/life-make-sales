@@ -1639,6 +1639,17 @@ async function doLogin() {
     location.reload();
   } catch (e) { msg.textContent = e.message; }
 }
+async function doSignup() {
+  const msg = $('#su-msg'); msg.textContent = '';
+  const username = $('#su-user').value.trim();
+  const password = $('#su-pw').value;
+  const code = $('#su-code').value.trim();
+  if (!username || !password || !code) { msg.textContent = 'ユーザー名・パスワード・登録コードは必須です'; return; }
+  try {
+    await api.post('/api/auth/signup', { username, password, display_name: $('#su-name').value.trim(), code });
+    location.reload();
+  } catch (e) { msg.textContent = e.message; }
+}
 async function checkAuthAndStart() {
   let me;
   try { me = await api.get('/api/auth/me'); } catch (e) { startApp(); return; }
@@ -1647,6 +1658,12 @@ async function checkAuthAndStart() {
     $('#login-overlay').classList.remove('hidden');
     const btn = $('#login-btn'); if (btn) btn.onclick = doLogin;
     ['login-user', 'login-pw'].forEach(id => { const el = $('#' + id); if (el) el.onkeydown = (e) => { if (e.key === 'Enter') doLogin(); }; });
+    // 新規登録（登録コードが設定されている時だけリンク表示）
+    try { const si = await api.get('/api/auth/signup_info'); if (si.signup_enabled) $('#to-signup-wrap').classList.remove('hidden'); } catch (e) {}
+    const showSU = $('#show-signup'); if (showSU) showSU.onclick = (e) => { e.preventDefault(); $('#login-view').classList.add('hidden'); $('#signup-view').classList.remove('hidden'); $('#login-title').textContent = '📝 新規登録'; };
+    const showLI = $('#show-login'); if (showLI) showLI.onclick = (e) => { e.preventDefault(); $('#signup-view').classList.add('hidden'); $('#login-view').classList.remove('hidden'); $('#login-title').textContent = '🔒 ログイン'; };
+    const sub = $('#su-btn'); if (sub) sub.onclick = doSignup;
+    const sc = $('#su-code'); if (sc) sc.onkeydown = (e) => { if (e.key === 'Enter') doSignup(); };
     return;
   }
   // サイドバー下部: ユーザー名・ロール＋管理リンク＋ログアウト
@@ -1680,10 +1697,19 @@ async function userAdmin() {
       </td>
     </tr>`).join('');
   openModal('ユーザー管理', `
+    <div class="modal-section-title">🔑 新規登録の設定</div>
+    <p class="muted" style="font-size:12px;margin-bottom:8px">登録コードを設定すると、ログイン画面に「新規登録」が表示され、<b>このコードを知っている人だけ</b>メンバー登録できます。空欄にすると新規登録を停止します。</p>
+    <div class="grid2">
+      <div class="field"><label>登録コード（合言葉）</label><input id="reg-code" placeholder="未設定＝新規登録オフ"></div>
+      <div class="field" style="display:flex;align-items:flex-end"><button class="btn" id="reg-save" style="width:100%">コードを保存</button></div>
+    </div>
+    <hr class="sep">
     <div class="section-row"><strong>登録ユーザー（${users.length}名）</strong><button class="btn sm" id="add-user">＋ ユーザー追加</button></div>
     <div class="table-wrap"><table><thead><tr><th>氏名</th><th>権限</th><th>状態</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <p class="muted" style="font-size:11.5px;margin-top:10px">※「無効」「削除」「PW再設定」を行うと、その人の既存ログインは即時無効になります（トークン失効）。</p>`, true);
   $('#add-user').onclick = userForm;
+  (async () => { try { const r = await api.get('/api/settings/register_code'); const el = $('#reg-code'); if (el) el.value = r.code || ''; } catch (e) {} })();
+  const rs = $('#reg-save'); if (rs) rs.onclick = async () => { await api.post('/api/settings/register_code', { code: $('#reg-code').value.trim() }); toast('登録コードを保存しました'); };
 }
 window.userAdmin = userAdmin;
 function userForm() {

@@ -210,6 +210,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- アプリ設定（登録コードなどのkey-value）
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
 -- ①幸せ意識度チェック（飛込・1回目アンケート）
 CREATE TABLE IF NOT EXISTS happiness_checks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
