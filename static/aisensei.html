@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>アオ先生</title>
+<style>
+  :root{
+    --blue:#3b6fe0; --blue-d:#2f59b8; --bg:#f3f6fb; --bot:#ffffff; --user:#3b6fe0;
+    --line:#e2e8f2; --text:#1f2733; --muted:#7a8699;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:"Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",sans-serif;
+    background:var(--bg); color:var(--text); display:flex; flex-direction:column; height:100vh;
+  }
+  header{
+    background:linear-gradient(135deg,var(--blue),var(--blue-d)); color:#fff;
+    padding:12px 16px; display:flex; align-items:center; gap:10px; flex:0 0 auto;
+    box-shadow:0 2px 8px rgba(0,0,0,.12);
+  }
+  header .avatar{
+    width:38px;height:38px;border-radius:50%;background:#dfe8fb;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:center;font-size:20px;
+    border:2px solid rgba(255,255,255,.7);overflow:hidden;
+  }
+  header .avatar img{width:100%;height:100%;object-fit:cover;display:block}
+  header .who{line-height:1.2}
+  header .who b{font-size:15px}
+  header .who small{opacity:.85;font-size:11px}
+  #log{flex:1 1 auto;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+  .row{display:flex;gap:8px;max-width:88%}
+  .row.bot{align-self:flex-start}
+  .row.user{align-self:flex-end;flex-direction:row-reverse}
+  .bubble{
+    padding:9px 12px;border-radius:14px;font-size:14px;line-height:1.6;white-space:pre-wrap;
+    word-break:break-word;box-shadow:0 1px 2px rgba(0,0,0,.06);
+  }
+  .row.bot .bubble{background:var(--bot);border:1px solid var(--line);border-top-left-radius:4px}
+  .row.user .bubble{background:var(--user);color:#fff;border-top-right-radius:4px}
+  .mini-av{width:28px;height:28px;border-radius:50%;background:#dfe8fb;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:center;font-size:15px;overflow:hidden}
+  .mini-av img{width:100%;height:100%;object-fit:cover}
+  .typing .bubble{color:var(--muted)}
+  .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--muted);
+    margin:0 1px;animation:blink 1.2s infinite}
+  .dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
+  @keyframes blink{0%,60%,100%{opacity:.25}30%{opacity:1}}
+  form{flex:0 0 auto;display:flex;gap:8px;padding:10px;border-top:1px solid var(--line);background:#fff}
+  #msg{flex:1;border:1px solid var(--line);border-radius:20px;padding:10px 14px;font-size:14px;
+    resize:none;max-height:100px;font-family:inherit}
+  #msg:focus{outline:none;border-color:var(--blue)}
+  button{background:var(--blue);color:#fff;border:none;border-radius:50%;width:42px;height:42px;
+    font-size:18px;cursor:pointer;flex:0 0 auto}
+  button:disabled{opacity:.5;cursor:default}
+  .note{font-size:10px;color:var(--muted);text-align:center;padding:4px 8px 8px}
+</style>
+</head>
+<body>
+  <header>
+    <!-- アオ先生の画像を使う場合は下の <img> の src を実際の画像URLに差し替えてください -->
+    <div class="avatar"><img src="/static/aisensei.png" alt="アオ先生"
+         onerror="this.replaceWith(document.createTextNode('👩‍🏫'))"></div>
+    <div class="who"><b>アオ</b><br><small>ライフメイクパートナーズ 案内係</small></div>
+  </header>
+
+  <div id="log"></div>
+
+  <form id="f">
+    <textarea id="msg" rows="1" placeholder="ご質問をどうぞ（例：LMPってどんなサービス？）" autocomplete="off"></textarea>
+    <button type="submit" id="send" title="送信">➤</button>
+  </form>
+  <div class="note">AIによる自動応答です。正確な料金・お申込みは担当者がご案内します。</div>
+
+<script>
+  const API = "/aisensei/chat";        // 同じサーバー（iframe元）を呼ぶので相対パスでOK
+  const log = document.getElementById("log");
+  const form = document.getElementById("f");
+  const input = document.getElementById("msg");
+  const sendBtn = document.getElementById("send");
+  const history = [];                   // {role, content} の会話履歴
+  let busy = false;
+
+  const AV = '<span class="mini-av"><img src="/static/aisensei.png" alt="" ' +
+             'onerror="this.replaceWith(document.createTextNode(\'👩‍🏫\'))"></span>';
+
+  function addRow(role, text){
+    const row = document.createElement("div");
+    row.className = "row " + (role === "user" ? "user" : "bot");
+    row.innerHTML = (role === "user" ? "" : AV) +
+      '<div class="bubble"></div>';
+    row.querySelector(".bubble").textContent = text;
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+    return row;
+  }
+
+  function addTyping(){
+    const row = document.createElement("div");
+    row.className = "row bot typing";
+    row.innerHTML = AV + '<div class="bubble"><span class="dot"></span>' +
+      '<span class="dot"></span><span class="dot"></span></div>';
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+    return row;
+  }
+
+  // 最初のあいさつ
+  addRow("bot", "こんにちは、LMPコンシェルジュのアオです😊　LMPの制度や各サービス・ツールの使い方など、お気軽にご質問ください。");
+
+  // 入力欄の高さ自動調整
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 100) + "px";
+  });
+  // Enterで送信 / Shift+Enterで改行
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); form.requestSubmit(); }
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text || busy) return;
+
+    busy = true; sendBtn.disabled = true;
+    addRow("user", text);
+    history.push({role:"user", content:text});
+    input.value = ""; input.style.height = "auto";
+
+    const typing = addTyping();
+    try{
+      // lmp.html の __aoAsk と同じ GET 契約（?q=&h=）で呼ぶ
+      const url = API + "?q=" + encodeURIComponent(text) +
+                  "&h=" + encodeURIComponent(JSON.stringify(history.slice(0,-1)));
+      const res = await fetch(url);
+      typing.remove();
+      if (res.status === 429){
+        addRow("bot", "アクセスが集中しています。少し時間をおいてお試しください🙏");
+      } else {
+        const data = await res.json().catch(()=>null);
+        if (data && data.ok && data.reply){
+          addRow("bot", data.reply);
+          history.push({role:"assistant", content:data.reply});
+        } else {
+          addRow("bot", "申し訳ありません、ただいまうまくお答えできませんでした。時間をおいてお試しください。");
+        }
+      }
+    }catch(err){
+      typing.remove();
+      addRow("bot", "通信エラーが発生しました。ネット環境をご確認のうえ、もう一度お試しください。");
+    }finally{
+      busy = false; sendBtn.disabled = false; input.focus();
+    }
+  });
+</script>
+</body>
+</html>
