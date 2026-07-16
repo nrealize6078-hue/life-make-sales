@@ -315,6 +315,13 @@ def _migrate(conn):
     # 面談: 同席者(ご家族など。個人面談向け)
     _ensure_columns(conn, "meetings", {"attendees": "TEXT"})
 
+    # 横断ログイン(SSO): メールでのログインと、所属会社による権限の絞り込み用。
+    # role は既存の admin/member に加え hq(本部)/company(会社)/member(社員) を許容する。
+    _ensure_columns(conn, "users", {
+        "email": "TEXT",
+        "company_id": "INTEGER",
+    })
+
     # 旧ステージの商談を新ステージへ移行
     for old, new in STAGE_MIGRATION.items():
         if old != new:

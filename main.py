@@ -35,6 +35,32 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 _COOKIE = "lms_session"
 
+# ----- 横断ログイン(SSO) -----
+# SSO_COOKIE_DOMAIN に ".lifemakepartners.net" を設定すると、Cookie が
+# 全サブドメイン(ポータル/eラーニング/SALES/ロープレ/会計系…)へ共有され、
+# 1回のログインで全ツールに入れる。未設定なら従来どおりこのホスト限定。
+SSO_COOKIE_DOMAIN = os.getenv("SSO_COOKIE_DOMAIN", "").strip()
+# ログインAPIを呼べるオリジン(ポータル等)。カンマ区切り。
+SSO_ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("SSO_ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
+
+
+def _set_session_cookie(response: Response, token: str):
+    """セッションCookieを発行する。SSO_COOKIE_DOMAIN 指定時はサブドメイン共通で発行。"""
+    kw = dict(httponly=True, samesite="lax", max_age=60 * 60 * 24 * auth.SESSION_DAYS, path="/")
+    if SSO_COOKIE_DOMAIN:
+        kw["domain"] = SSO_COOKIE_DOMAIN
+        kw["secure"] = True  # 本番(https)前提。共通Cookieは必ずSecureで。
+    response.set_cookie(_COOKIE, token, **kw)
+
+
+def _clear_session_cookie(response: Response):
+    if SSO_COOKIE_DOMAIN:
+        response.delete_cookie(_COOKIE, path="/", domain=SSO_COOKIE_DOMAIN)
+    else:
+        _clear_session_cookie(response)
+
 
 def _current_user(request: Request):
     """Cookie のセッショントークンから現在のユーザーを返す(無効なら None)。"""
@@ -49,7 +75,7 @@ def _require_admin(request: Request):
     u = _current_user(request)
     if not auth.auth_enabled():
         return None  # 認証OFF時は誰でも管理操作可(ローカル単独利用)
-    if not u or u.get("role") != "admin":
+    if not u or not auth.is_hq(u.get("role")):
         raise HTTPException(403, "管理者権限が必要です")
     return u
 
@@ -83,6 +109,27 @@ async def _no_cache_static(request, call_next):
         "Content-Security-Policy",
         "frame-ancestors 'self' https://lifemakepartners.net https://www.lifemakepartners.net",
     )
+    return resp
+
+
+@app.middleware("http")
+async def _sso_cors(request: Request, call_next):
+    """横断ログイン用のCORS。SSO_ALLOWED_ORIGINS に載ったオリジン(ポータル等)から
+    /api/auth/* を Cookie 付きで呼べるようにする。他のオリジン・他のパスには付けない。"""
+    origin = request.headers.get("origin", "")
+    allowed = origin in SSO_ALLOWED_ORIGINS and request.url.path.startswith("/api/auth/")
+
+    if allowed and request.method == "OPTIONS":  # プリフライト
+        resp = Response(status_code=204)
+    else:
+        resp = await call_next(request)
+
+    if allowed:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Vary"] = "Origin"
     return resp
 
 
@@ -136,7 +183,7 @@ def auth_me(request: Request):
         "auth_enabled": auth.auth_enabled(),
         "authenticated": _is_authed(request),
         "user": u,
-        "is_admin": (u or {}).get("role") == "admin" if u else (not auth.auth_enabled()),
+        "is_admin": auth.is_hq((u or {}).get("role")) if u else (not auth.auth_enabled()),
     }
 
 
@@ -149,15 +196,28 @@ def auth_login(body: LoginIn, response: Response):
     if not user or not auth.verify_password(body.password, user["password_hash"]):
         raise HTTPException(401, "ユーザー名またはパスワードが違います")
     token = auth.create_session(user["id"])
-    response.set_cookie(_COOKIE, token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * auth.SESSION_DAYS)
+    _set_session_cookie(response, token)
     return {"ok": True, "user": {"username": user["username"], "role": user["role"], "display_name": user["display_name"]}}
 
 
 @app.post("/api/auth/logout")
 def auth_logout(request: Request, response: Response):
     auth.revoke_session(request.cookies.get(_COOKIE))
-    response.delete_cookie(_COOKIE)
+    _clear_session_cookie(response)
     return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    """横断ログインの検証API。各ツールはこれを呼んでログイン状態と権限を判定する。
+
+    返り値: {"authenticated": bool, "user": {...} | None}
+      user.role      … hq(本部) / company(会社) / member(社員)  ※admin は hq 相当
+      user.company_id… 所属会社ID(本部は None)
+      user.is_hq     … 本部かどうか
+    """
+    u = _current_user(request)
+    return {"authenticated": u is not None, "user": u}
 
 
 # ----- 新規登録（登録コード方式） -----
@@ -179,7 +239,7 @@ def auth_signup(body: SignupIn, response: Response):
     except ValueError as e:
         raise HTTPException(400, str(e))
     token = auth.create_session(uid)
-    response.set_cookie(_COOKIE, token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * auth.SESSION_DAYS)
+    _set_session_cookie(response, token)
     return {"ok": True}
 
 
