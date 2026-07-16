@@ -15,6 +15,18 @@ import database as db
 _ITER = 200_000
 SESSION_DAYS = 7
 
+# ロール（横断ログイン用の3階層）。
+#   hq      : LMP本部。全会社・全データ。
+#   company : 加盟店(会社)。自社のみ。
+#   member  : 社員。自分のデータのみ。
+# 'admin' は旧データ互換のため残し、権限上は hq と同等に扱う。
+ROLES = ("hq", "company", "member", "admin")
+
+
+def is_hq(role: str) -> bool:
+    """本部相当（旧 admin を含む）か。"""
+    return role in ("hq", "admin")
+
 
 # ---------- パスワード ----------
 def hash_password(password: str) -> str:
@@ -37,21 +49,27 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
-def create_user(username: str, password: str, role: str = "member", display_name: str = "") -> int:
+def create_user(username: str, password: str, role: str = "member", display_name: str = "",
+                email: str = "", company_id: int = None) -> int:
     username = (username or "").strip()
     if not username:
         raise ValueError("ユーザー名を入力してください")
     if not password or len(password) < 4:
         raise ValueError("パスワードは4文字以上にしてください")
-    if role not in ("admin", "member"):
+    if role not in ROLES:
         role = "member"
+    email = (email or "").strip().lower()
     conn = db.get_conn()
     try:
         if conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
             raise ValueError("そのユーザー名は既に使われています")
+        if email and conn.execute("SELECT 1 FROM users WHERE lower(email)=?", (email,)).fetchone():
+            raise ValueError("そのメールアドレスは既に使われています")
         cur = conn.execute(
-            "INSERT INTO users (username, display_name, password_hash, role, active, created_at) VALUES (?,?,?,?,1,?)",
-            (username, display_name or username, hash_password(password), role, _now()),
+            "INSERT INTO users (username, display_name, password_hash, role, active, created_at, email, company_id) "
+            "VALUES (?,?,?,?,1,?,?,?)",
+            (username, display_name or username, hash_password(password), role, _now(),
+             email or None, company_id),
         )
         conn.commit()
         return cur.lastrowid
@@ -79,9 +97,17 @@ def count_users() -> int:
 
 
 def get_user_by_name(username: str):
+    """ユーザー名（ID）またはメールアドレスでユーザーを引く。どちらでもログインできる。"""
+    key = (username or "").strip()
+    if not key:
+        return None
     conn = db.get_conn()
     try:
-        r = conn.execute("SELECT * FROM users WHERE username=? AND active=1", (username,)).fetchone()
+        r = conn.execute("SELECT * FROM users WHERE username=? AND active=1", (key,)).fetchone()
+        if not r:
+            r = conn.execute(
+                "SELECT * FROM users WHERE lower(email)=? AND active=1", (key.lower(),)
+            ).fetchone()
         return dict(r) if r else None
     finally:
         conn.close()
@@ -108,7 +134,7 @@ def update_user(user_id: int, role: str = None, active: int = None, display_name
         if not cur:
             raise ValueError("ユーザーが見つかりません")
         old = dict(cur)
-        new_role = role if role in ("admin", "member") else old["role"]
+        new_role = role if role in ROLES else old["role"]
         new_active = old["active"] if active is None else (1 if active else 0)
         new_name = old["display_name"] if display_name is None else display_name
         conn.execute("UPDATE users SET role=?, active=?, display_name=? WHERE id=?",
@@ -155,7 +181,7 @@ def get_session_user(token: str):
     conn = db.get_conn()
     try:
         r = conn.execute(
-            "SELECT u.id, u.username, u.display_name, u.role, u.active, s.expires_at "
+            "SELECT u.id, u.username, u.display_name, u.role, u.active, u.email, u.company_id, s.expires_at "
             "FROM sessions s JOIN users u ON s.user_id=u.id WHERE s.token=?", (token,)
         ).fetchone()
         if not r:
@@ -163,7 +189,9 @@ def get_session_user(token: str):
         d = dict(r)
         if not d["active"] or d["expires_at"] < datetime.now().isoformat(timespec="seconds"):
             return None
-        return {"id": d["id"], "username": d["username"], "display_name": d["display_name"], "role": d["role"]}
+        return {"id": d["id"], "username": d["username"], "display_name": d["display_name"],
+                "role": d["role"], "email": d["email"], "company_id": d["company_id"],
+                "is_hq": is_hq(d["role"])}
     finally:
         conn.close()
 
