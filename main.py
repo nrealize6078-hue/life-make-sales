@@ -178,6 +178,13 @@ class PasswordIn(BaseModel):
 
 @app.get("/api/auth/me")
 def auth_me(request: Request):
+    """ログイン状態と権限を返す。横断ログイン(SSO)の検証APIも兼ねる。
+
+    各ツールはこれを呼んで「誰か・何を見せるか」を判定する。
+      user.role      … hq(本部) / company(会社) / member(社員)  ※admin は hq 相当
+      user.company_id… 所属会社ID(本部は None)。データの絞り込みに使う
+      user.is_hq     … 本部かどうか
+    """
     u = _current_user(request)
     return {
         "auth_enabled": auth.auth_enabled(),
@@ -205,19 +212,6 @@ def auth_logout(request: Request, response: Response):
     auth.revoke_session(request.cookies.get(_COOKIE))
     _clear_session_cookie(response)
     return {"ok": True}
-
-
-@app.get("/api/auth/me")
-def auth_me(request: Request):
-    """横断ログインの検証API。各ツールはこれを呼んでログイン状態と権限を判定する。
-
-    返り値: {"authenticated": bool, "user": {...} | None}
-      user.role      … hq(本部) / company(会社) / member(社員)  ※admin は hq 相当
-      user.company_id… 所属会社ID(本部は None)
-      user.is_hq     … 本部かどうか
-    """
-    u = _current_user(request)
-    return {"authenticated": u is not None, "user": u}
 
 
 # ----- 新規登録（登録コード方式） -----
