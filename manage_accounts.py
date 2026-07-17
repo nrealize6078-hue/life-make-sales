@@ -74,7 +74,38 @@ def cmd_list(_args):
               f"{(r['company'] or '-'):<16}{(r['email'] or '-'):<26}{r['display_name'] or ''}")
 
 
+def _username_taken(username: str) -> bool:
+    """停止中のアカウントも含めて username が使われているか（active を問わない）。"""
+    conn = db.get_conn()
+    try:
+        return conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone() is not None
+    finally:
+        conn.close()
+
+
+def _email_taken(email: str) -> bool:
+    if not email:
+        return False
+    conn = db.get_conn()
+    try:
+        return conn.execute("SELECT 1 FROM users WHERE lower(email)=?", (email.strip().lower(),)).fetchone() is not None
+    finally:
+        conn.close()
+
+
 def cmd_add(args):
+    # 先に重複を確認する。会社を作ってからユーザー作成に失敗すると、
+    # 使われない会社だけが残ってしまうため（実際に発生したため対策）。
+    if _username_taken(args.id):
+        print(f"エラー: ID「{args.id}」は既に使われています。")
+        print(f"  現状の確認 : manage_accounts.py list")
+        print(f"  作り直す場合: manage_accounts.py delete --id {args.id}  （その後もう一度 add）")
+        sys.exit(1)
+    if args.email and _email_taken(args.email):
+        print(f"エラー: メールアドレス「{args.email}」は既に使われています。")
+        print(f"  現状の確認 : manage_accounts.py list")
+        sys.exit(1)
+
     company_id = find_or_create_company(args.company)
     pw = args.password or gen_password()
     try:
