@@ -104,6 +104,79 @@ def cmd_reset(args):
     print("  ※この利用者の既存ログインは全て無効になりました。")
 
 
+def cmd_companies(_args):
+    conn = db.get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT c.id, c.name, (SELECT COUNT(*) FROM users u WHERE u.company_id=c.id) AS n "
+            "FROM companies c ORDER BY c.id"
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        print("会社は1件もありません。")
+        return
+    print(f"{'ID':<5}{'利用者数':<9}会社名")
+    print("-" * 50)
+    for r in rows:
+        print(f"{r['id']:<5}{r['n']:<9}{r['name']}")
+
+
+def cmd_delete(args):
+    """アカウントを完全に削除する（IDを再利用できるようにする）。"""
+    u = auth.get_user_by_name(args.id)
+    if not u:
+        print(f"エラー: {args.id} が見つかりません")
+        sys.exit(1)
+    conn = db.get_conn()
+    try:
+        others = 0
+        if u.get("company_id"):
+            others = conn.execute(
+                "SELECT COUNT(*) FROM users WHERE company_id=? AND id<>?", (u["company_id"], u["id"])
+            ).fetchone()[0]
+        conn.execute("DELETE FROM sessions WHERE user_id=?", (u["id"],))
+        conn.execute("DELETE FROM users WHERE id=?", (u["id"],))
+        conn.commit()
+        print(f"{args.id} を削除しました。このIDは再度使えます。")
+        if u.get("company_id") and others == 0:
+            r = conn.execute("SELECT name FROM companies WHERE id=?", (u["company_id"],)).fetchone()
+            if r:
+                print(f'\n※ 会社「{r["name"]}」に利用者がいなくなりました。')
+                print(f'   間違って作った会社なら、次で削除できます:')
+                print(f'   .venv/bin/python manage_accounts.py company-delete --name "{r["name"]}"')
+    finally:
+        conn.close()
+
+
+def cmd_company_delete(args):
+    """会社を削除する。利用者や取引データが残っている場合は中止する（安全側）。"""
+    conn = db.get_conn()
+    try:
+        r = conn.execute("SELECT id FROM companies WHERE name=?", (args.name,)).fetchone()
+        if not r:
+            print(f"エラー: 会社「{args.name}」が見つかりません")
+            sys.exit(1)
+        cid = r["id"]
+        n = conn.execute("SELECT COUNT(*) FROM users WHERE company_id=?", (cid,)).fetchone()[0]
+        if n:
+            print(f"中止: この会社には利用者が {n} 人います。先にアカウントを削除してください。")
+            sys.exit(1)
+        for t in ("contacts", "deals", "meetings"):
+            try:
+                cnt = conn.execute(f"SELECT COUNT(*) FROM {t} WHERE company_id=?", (cid,)).fetchone()[0]
+            except Exception:
+                continue
+            if cnt:
+                print(f"中止: {t} に {cnt} 件の関連データがあります。誤削除を防ぐため中止しました。")
+                sys.exit(1)
+        conn.execute("DELETE FROM companies WHERE id=?", (cid,))
+        conn.commit()
+        print(f"会社「{args.name}」を削除しました。")
+    finally:
+        conn.close()
+
+
 def cmd_disable(args):
     u = auth.get_user_by_name(args.id)
     if not u:
@@ -133,9 +206,19 @@ def main():
     r.add_argument("--password", default="")
     r.set_defaults(func=cmd_reset)
 
-    d = sub.add_parser("disable", help="アカウント停止")
+    d = sub.add_parser("disable", help="アカウント停止（IDは残る）")
     d.add_argument("--id", required=True)
     d.set_defaults(func=cmd_disable)
+
+    x = sub.add_parser("delete", help="アカウント完全削除（IDを再利用できる）")
+    x.add_argument("--id", required=True)
+    x.set_defaults(func=cmd_delete)
+
+    sub.add_parser("companies", help="会社一覧").set_defaults(func=cmd_companies)
+
+    cd = sub.add_parser("company-delete", help="会社削除（利用者・取引データが無い場合のみ）")
+    cd.add_argument("--name", required=True)
+    cd.set_defaults(func=cmd_company_delete)
 
     args = p.parse_args()
     db.init_db()
