@@ -101,6 +101,105 @@ def list_auth_users():
     return out
 
 
+def find_auth_user_by_email(email: str):
+    """Auth に同じメールのユーザーが既にいれば返す（重複作成を防ぐ）。"""
+    email = (email or "").strip().lower()
+    for u in list_auth_users():
+        if (u.get("email") or "").lower() == email:
+            return u
+    return None
+
+
+ROLES = ("admin", "accountant", "viewer")
+
+
+def create_tenant(name: str, rc_member_id: str = None):
+    """加盟企業(tenant)を1件作る。既に同名があればそれを返す（重複防止）。"""
+    name = (name or "").strip()
+    if not name:
+        raise SupabaseError("会社名が空です")
+    existing = _request("GET", "/rest/v1/tenant",
+                        {"select": "id,name,realize_club_member_id", "name": f"eq.{name}"})
+    if existing:
+        return existing[0]
+    body = {"name": name}
+    if rc_member_id:
+        body["realize_club_member_id"] = rc_member_id
+    created = _request("POST", "/rest/v1/tenant", body=body,
+                       query={"select": "id,name,realize_club_member_id"})
+    # PostgREST は Prefer 次第で配列/オブジェクトを返す
+    row = created[0] if isinstance(created, list) else created
+    if not row or not row.get("id"):
+        # 返却が空でも作成はされている場合があるので取り直す
+        again = _request("GET", "/rest/v1/tenant",
+                         {"select": "id,name,realize_club_member_id", "name": f"eq.{name}"})
+        row = again[0] if again else None
+    if not row:
+        raise SupabaseError("tenant作成の確認に失敗しました")
+    return row
+
+
+def add_member(email: str, tenant_id: str, role: str = "admin",
+               mode: str = "invite", password: str = None):
+    """加盟店の利用者を1件作る。
+      mode='invite'  : 招待メールを送る（本人がパスワードを設定）
+      mode='password': その場でパスワードを設定（email_confirm=true）
+    既に同じメールの auth ユーザーがいれば、それを流用して app_user だけ紐付ける。
+    戻り値: {'user_id', 'email', 'reused', 'mode'}
+    """
+    email = (email or "").strip().lower()
+    role = role if role in ROLES else "admin"
+    if "@" not in email:
+        raise SupabaseError(f"メールアドレスが不正です: {email}")
+
+    reused = False
+    existing = find_auth_user_by_email(email)
+    if existing:
+        user_id = existing["id"]
+        reused = True
+    elif mode == "invite":
+        res = _request("POST", "/auth/v1/admin/generate_link",
+                       body={"type": "invite", "email": email}, use_auth_admin=True)
+        # generate_link は user オブジェクトを含む
+        user_id = ((res or {}).get("user") or {}).get("id") or (res or {}).get("id")
+        if not user_id:
+            u = find_auth_user_by_email(email)
+            user_id = u["id"] if u else None
+        if not user_id:
+            raise SupabaseError("招待ユーザーの作成に失敗しました")
+    else:  # password
+        if not password or len(password) < 8:
+            raise SupabaseError("パスワードは8文字以上にしてください")
+        res = _request("POST", "/auth/v1/admin/users",
+                       body={"email": email, "password": password, "email_confirm": True},
+                       use_auth_admin=True)
+        user_id = (res or {}).get("id")
+        if not user_id:
+            raise SupabaseError("ユーザー作成に失敗しました")
+
+    # app_user に紐付け（upsert）
+    _request("POST", "/rest/v1/app_user",
+             body={"id": user_id, "tenant_id": tenant_id, "role": role, "email": email},
+             query={"on_conflict": "id"})
+    return {"user_id": user_id, "email": email, "reused": reused, "mode": mode}
+
+
+def add_company(name: str, email: str, rc_member_id: str = None,
+                role: str = "admin", mode: str = "invite", password: str = None):
+    """加盟店を1社追加する（tenant作成 → 利用者作成 → 紐付け）。"""
+    tenant = create_tenant(name, rc_member_id)
+    member = add_member(email, tenant["id"], role=role, mode=mode, password=password)
+    return {"tenant": tenant, "member": member}
+
+
+def set_user_active(user_id: str, active: bool):
+    """利用者の有効/停止。Supabaseはban_durationで無効化する。"""
+    dur = "none" if active else "876000h"  # 停止=100年 ban
+    _request("PUT", f"/auth/v1/admin/users/{user_id}",
+             body={"ban_duration": dur}, use_auth_admin=True)
+    return {"user_id": user_id, "active": active}
+
+
 def overview():
     """本部ダッシュボード用に、加盟店ごとの利用状況を組み立てる（読み取りのみ）。"""
     tenants = list_tenants()

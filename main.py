@@ -1818,6 +1818,30 @@ def hq_overview(request: Request):
         raise HTTPException(502, f"Supabase呼び出しに失敗: {e}")
 
 
+class HqAddCompanyIn(BaseModel):
+    name: str
+    email: str
+    rc_member_id: Optional[str] = None
+    role: str = "admin"
+    mode: str = "invite"          # invite（招待メール） / password
+    password: Optional[str] = None
+
+
+@app.post("/api/hq/company")
+def hq_add_company(body: HqAddCompanyIn, request: Request):
+    _require_admin(request)
+    if not _sb.enabled():
+        raise HTTPException(503, "Supabaseが未設定です")
+    if not (body.name or "").strip() or "@" not in (body.email or ""):
+        raise HTTPException(400, "会社名とメールアドレスは必須です")
+    try:
+        return _sb.add_company(body.name.strip(), body.email.strip(),
+                               rc_member_id=(body.rc_member_id or None),
+                               role=body.role, mode=body.mode, password=body.password)
+    except _sb.SupabaseError as e:
+        raise HTTPException(502, f"追加に失敗: {e}")
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
