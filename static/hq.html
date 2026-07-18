@@ -31,6 +31,17 @@
            background: #0e2245; color: #fff; }
   button.ghost { background: #eef2fb; color: #0e2245; }
   a.back { color: #2e5be6; text-decoration: none; font-size: 13px; }
+  .panel { background:#fff; border:1px solid rgba(14,34,69,.08); border-radius:14px; padding:20px 22px; margin:22px 0;
+           box-shadow:0 10px 26px -20px rgba(14,34,69,.4); }
+  .panel h2 { font-size:16px; color:#0e2245; margin-bottom:14px; }
+  .form { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; align-items:end; }
+  .field label { display:block; font-size:12px; color:#5b6b82; margin-bottom:5px; }
+  .field input, .field select { width:100%; padding:10px 12px; border:1px solid rgba(14,34,69,.16);
+           border-radius:10px; font-family:inherit; font-size:14px; }
+  .hint { font-size:11.5px; color:#8493a8; margin-top:6px; }
+  #addResult { margin-top:12px; font-size:13px; }
+  .success { background:#e9f9ee; color:#1f7a4d; padding:10px 14px; border-radius:10px; }
+  details.pw { grid-column:1/-1; font-size:12.5px; color:#5b6b82; }
 </style>
 </head>
 <body>
@@ -48,6 +59,27 @@
 
   <div id="status"></div>
   <div class="cards" id="cards"></div>
+
+  <div class="panel" id="addPanel" style="display:none">
+    <h2>加盟店を追加</h2>
+    <div class="form">
+      <div class="field"><label>会社名 *</label><input id="f_name" placeholder="富士リアルティ株式会社"></div>
+      <div class="field"><label>担当者メール *</label><input id="f_email" placeholder="fj@fuji-realty.com"></div>
+      <div class="field"><label>RC会員ID</label><input id="f_rc" placeholder="LMP-0001"></div>
+      <div class="field"><label>権限</label>
+        <select id="f_role"><option value="admin">admin（管理者）</option><option value="accountant">accountant（会計担当）</option><option value="viewer">viewer（閲覧のみ）</option></select>
+      </div>
+      <div class="field"><label>パスワードの渡し方</label>
+        <select id="f_mode"><option value="invite">招待メールを送る（本人が設定）</option><option value="password">その場で発行する</option></select>
+      </div>
+      <div class="field"><label>&nbsp;</label><button onclick="addCompany()">追加する</button></div>
+      <details class="pw" id="pwWrap" style="display:none"><summary>発行するパスワード（8文字以上）</summary>
+        <input id="f_pw" placeholder="自動生成する場合は空欄" style="margin-top:8px;max-width:280px"></details>
+    </div>
+    <div class="hint">「招待メール」はSupabaseのメール送信設定が必要です。届かない場合は「その場で発行」をご利用ください。</div>
+    <div id="addResult"></div>
+  </div>
+
   <div id="body"></div>
 </div>
 
@@ -86,6 +118,8 @@ async function load(){
       card(d.auth_user_count, '認証済みユーザー') +
       card(d.hq_count, '本部ユーザー');
 
+    document.getElementById('addPanel').style.display = '';
+
     if (!d.tenants.length) { body.innerHTML = '<p class="muted">加盟店がまだありません。</p>'; return; }
 
     var rows = d.tenants.map(function(t){
@@ -107,6 +141,40 @@ async function load(){
   }
 }
 function card(n, l){ return '<div class="card"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>'; }
+
+// パスワード方式の切替でパスワード欄を出す
+document.getElementById('f_mode').addEventListener('change', function(){
+  document.getElementById('pwWrap').style.display = this.value==='password' ? '' : 'none';
+});
+
+async function addCompany(){
+  var name = document.getElementById('f_name').value.trim();
+  var email = document.getElementById('f_email').value.trim();
+  var rc = document.getElementById('f_rc').value.trim();
+  var role = document.getElementById('f_role').value;
+  var mode = document.getElementById('f_mode').value;
+  var pw = document.getElementById('f_pw').value;
+  var out = document.getElementById('addResult');
+  if (!name || email.indexOf('@')<0){ out.innerHTML='<div class="warn">会社名とメールアドレスを入力してください。</div>'; return; }
+  out.innerHTML = '<span class="muted">追加中…</span>';
+  try {
+    var r = await fetch('/api/hq/company', {
+      method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name:name, email:email, rc_member_id:rc||null, role:role, mode:mode, password:pw||null})
+    }).then(async res=>{ if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||res.status); return res.json(); });
+
+    var msg = '✅ 「'+esc(name)+'」を追加しました。';
+    if (r.member.reused) msg += '（既存のメールを流用）';
+    msg += mode==='invite' ? ' 招待メールを '+esc(email)+' に送信しました。'
+                           : ' パスワードを設定しました。担当者へ安全にお渡しください。';
+    out.innerHTML = '<div class="success">'+msg+'</div>';
+    ['f_name','f_email','f_rc','f_pw'].forEach(function(id){ document.getElementById(id).value=''; });
+    load();   // 一覧を更新
+  } catch(e) {
+    out.innerHTML = '<div class="warn">追加に失敗しました：'+esc(e.message)+'</div>';
+  }
+}
+
 load();
 </script>
 </body>
