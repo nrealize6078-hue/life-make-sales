@@ -1842,6 +1842,65 @@ def hq_add_company(body: HqAddCompanyIn, request: Request):
         raise HTTPException(502, f"追加に失敗: {e}")
 
 
+class HqEmailIn(BaseModel):
+    email: str
+    is_hq: bool = True
+
+
+@app.post("/api/hq/promote")
+def hq_promote(body: HqEmailIn, request: Request):
+    """本部(is_hq)の付与/解除。"""
+    _require_admin(request)
+    if not _sb.enabled():
+        raise HTTPException(503, "Supabaseが未設定です")
+    try:
+        return _sb.set_hq(body.email.strip().lower(), body.is_hq)
+    except _sb.SupabaseError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.get("/api/hq/acting")
+def hq_acting(request: Request, email: str):
+    """本部ユーザーの現在の閲覧状態（is_hq / 見ている会社）を返す。"""
+    _require_admin(request)
+    if not _sb.enabled():
+        raise HTTPException(503, "Supabaseが未設定です")
+    try:
+        au = _sb.get_app_user_by_email(email.strip().lower())
+        if not au:
+            return {"found": False}
+        acting_name = None
+        if au.get("acting_tenant_id"):
+            ts = _sb.list_tenants()
+            acting_name = next((t["name"] for t in ts if t["id"] == au["acting_tenant_id"]), None)
+        return {"found": True, "is_hq": au.get("is_hq", False),
+                "acting_tenant_id": au.get("acting_tenant_id"), "acting_name": acting_name}
+    except _sb.SupabaseError as e:
+        raise HTTPException(502, str(e))
+
+
+class HqActIn(BaseModel):
+    email: str
+    tenant_id: Optional[str] = None   # None で解除
+
+
+@app.post("/api/hq/act")
+def hq_act(body: HqActIn, request: Request):
+    """本部が「見る加盟店」を切り替える。本部(is_hq)本人にのみ許可。"""
+    _require_admin(request)
+    if not _sb.enabled():
+        raise HTTPException(503, "Supabaseが未設定です")
+    try:
+        au = _sb.get_app_user_by_email(body.email.strip().lower())
+        if not au:
+            raise HTTPException(404, "そのメールのユーザーがSupabaseにいません")
+        if not au.get("is_hq"):
+            raise HTTPException(403, "本部(is_hq)ユーザーではありません。先に「本部にする」で昇格してください")
+        return _sb.set_acting_tenant(au["id"], body.tenant_id)
+    except _sb.SupabaseError as e:
+        raise HTTPException(502, str(e))
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

@@ -192,6 +192,36 @@ def add_company(name: str, email: str, rc_member_id: str = None,
     return {"tenant": tenant, "member": member}
 
 
+def set_hq(email: str, is_hq: bool = True):
+    """指定メールの利用者を本部(hq)に昇格/解除する。app_user.is_hq を更新。"""
+    u = find_auth_user_by_email(email)
+    if not u:
+        raise SupabaseError(f"Supabaseに {email} が見つかりません。先に加盟店/ユーザーとして登録してください。")
+    _request("PATCH", "/rest/v1/app_user",
+             query={"id": f"eq.{u['id']}"},
+             body={"is_hq": bool(is_hq)})
+    return {"user_id": u["id"], "email": email, "is_hq": bool(is_hq)}
+
+
+def set_acting_tenant(user_id: str, tenant_id: str = None):
+    """本部が「見る加盟店」を切り替える。tenant_id=None で解除（自分に戻る）。
+    is_hq=true の利用者にのみ意味がある（フックが is_hq を見て適用）。"""
+    _request("PATCH", "/rest/v1/app_user",
+             query={"id": f"eq.{user_id}"},
+             body={"acting_tenant_id": tenant_id})
+    return {"user_id": user_id, "acting_tenant_id": tenant_id}
+
+
+def get_app_user_by_email(email: str):
+    """app_user 行（is_hq / acting_tenant_id 含む）をメールで取得。"""
+    u = find_auth_user_by_email(email)
+    if not u:
+        return None
+    rows = _request("GET", "/rest/v1/app_user",
+                    {"select": "id,tenant_id,email,role,is_hq,acting_tenant_id", "id": f"eq.{u['id']}"})
+    return rows[0] if rows else None
+
+
 def set_user_active(user_id: str, active: bool):
     """利用者の有効/停止。Supabaseはban_durationで無効化する。"""
     dur = "none" if active else "876000h"  # 停止=100年 ban
