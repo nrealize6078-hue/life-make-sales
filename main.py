@@ -1788,6 +1788,36 @@ def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
+# ===== LMP本部コンソール（(a)(b)(c)）=====
+# 本部(hq)のみ。全加盟店を横断して扱うため、_require_admin(=is_hq) で保護する。
+import supabase_admin as _sb
+
+
+@app.get("/hq")
+def hq_console(request: Request):
+    if not _is_authed(request):
+        return FileResponse(os.path.join(STATIC_DIR, "index.html"))  # 未ログインはログイン画面へ
+    return FileResponse(os.path.join(STATIC_DIR, "hq.html"))
+
+
+@app.get("/api/hq/status")
+def hq_status(request: Request):
+    _require_admin(request)
+    return {"configured": _sb.enabled(),
+            "supabase_url": _sb.SUPABASE_URL or None}
+
+
+@app.get("/api/hq/overview")
+def hq_overview(request: Request):
+    _require_admin(request)
+    if not _sb.enabled():
+        raise HTTPException(503, "Supabaseが未設定です（VPSの .env に SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY を設定してください）")
+    try:
+        return _sb.overview()
+    except _sb.SupabaseError as e:
+        raise HTTPException(502, f"Supabase呼び出しに失敗: {e}")
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
