@@ -60,6 +60,16 @@
   <div id="status"></div>
   <div class="cards" id="cards"></div>
 
+  <div class="panel" id="hqModePanel" style="display:none">
+    <h2>本部モード（加盟店の画面をサポートで見る）</h2>
+    <div class="form">
+      <div class="field" style="grid-column:span 2"><label>あなたの本部ログイン用メール（会計アプリのログインに使うアドレス）</label>
+        <input id="hqEmail" placeholder="n.realize6078@gmail.com"></div>
+      <div class="field"><label>&nbsp;</label><button class="ghost" onclick="promoteHq()">このメールを本部にする</button></div>
+    </div>
+    <div id="actingStatus" class="hint" style="margin-top:12px"></div>
+  </div>
+
   <div class="panel" id="addPanel" style="display:none">
     <h2>加盟店を追加</h2>
     <div class="form">
@@ -119,6 +129,8 @@ async function load(){
       card(d.hq_count, '本部ユーザー');
 
     document.getElementById('addPanel').style.display = '';
+    document.getElementById('hqModePanel').style.display = '';
+    refreshActing();
 
     if (!d.tenants.length) { body.innerHTML = '<p class="muted">加盟店がまだありません。</p>'; return; }
 
@@ -132,10 +144,11 @@ async function load(){
         + '<td>'+t.member_count+'</td>'
         + '<td>'+fmtDate(t.last_login)+'</td>'
         + '<td class="members">'+(members||'<span class="muted">—</span>')+'</td>'
+        + '<td><button class="ghost" onclick="actAs(\''+t.tenant_id+'\',\''+esc(t.name).replace(/\'/g,"\\'")+'\')">この会社を見る</button></td>'
         + '</tr>';
     }).join('');
 
-    body.innerHTML = '<table><thead><tr><th>加盟企業</th><th>人数</th><th>最終ログイン</th><th>メンバー</th></tr></thead><tbody>'+rows+'</tbody></table>';
+    body.innerHTML = '<table><thead><tr><th>加盟企業</th><th>人数</th><th>最終ログイン</th><th>メンバー</th><th>サポート</th></tr></thead><tbody>'+rows+'</tbody></table>';
   } catch(e) {
     body.innerHTML = '<div class="warn">読み込みに失敗しました：'+esc(e.message)+'</div>';
   }
@@ -146,6 +159,61 @@ function card(n, l){ return '<div class="card"><div class="n">'+n+'</div><div cl
 document.getElementById('f_mode').addEventListener('change', function(){
   document.getElementById('pwWrap').style.display = this.value==='password' ? '' : 'none';
 });
+
+// 本部メールを localStorage に保持
+var hqEmailInput = document.getElementById('hqEmail');
+try { hqEmailInput.value = localStorage.getItem('lmp_hq_email') || ''; } catch(e){}
+hqEmailInput.addEventListener('change', function(){ try{ localStorage.setItem('lmp_hq_email', this.value.trim()); }catch(e){} refreshActing(); });
+
+function hqEmail(){ return (document.getElementById('hqEmail').value||'').trim().toLowerCase(); }
+
+async function promoteHq(){
+  var email = hqEmail();
+  var s = document.getElementById('actingStatus');
+  if (email.indexOf('@')<0){ s.innerHTML='<span class="warn">本部にするメールアドレスを入力してください。</span>'; return; }
+  try{ localStorage.setItem('lmp_hq_email', email); }catch(e){}
+  s.textContent = '設定中…';
+  try {
+    await fetch('/api/hq/promote', {method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email:email, is_hq:true})}).then(async r=>{ if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.status); });
+    refreshActing();
+  } catch(e){ s.innerHTML='<span class="warn">失敗：'+esc(e.message)+'</span>'; }
+}
+
+async function refreshActing(){
+  var s = document.getElementById('actingStatus');
+  var email = hqEmail();
+  if (!email){ s.innerHTML='<span class="muted">本部メールを入力すると、加盟店のサポート閲覧が使えます。</span>'; return; }
+  try {
+    var d = await fetch('/api/hq/acting?email='+encodeURIComponent(email), {credentials:'include'}).then(r=>r.json());
+    if (!d.found){ s.innerHTML='<span class="muted">'+esc(email)+' はまだSupabaseにいません。「このメールを本部にする」を押す前に、加盟店/ユーザーとして登録が必要です。</span>'; return; }
+    if (!d.is_hq){ s.innerHTML='<span class="muted">'+esc(email)+' は本部ではありません。「このメールを本部にする」を押してください。</span>'; return; }
+    if (d.acting_tenant_id){
+      s.innerHTML = '🔎 現在 <strong>'+esc(d.acting_name||'ある加盟店')+'</strong> を閲覧中です。'
+        + ' <button class="ghost" onclick="actAs(null)">解除して本部に戻る</button>'
+        + '<div class="muted" style="margin-top:6px">会計アプリ（例: <a href="https://kaikei.lifemakepartners.net" target="_blank">kaikei.lifemakepartners.net</a>）を開くと、この会社の画面が見えます。</div>';
+    } else {
+      s.innerHTML = '✅ 本部モード（自分）です。下の「この会社を見る」で加盟店に切り替えられます。';
+    }
+  } catch(e){ s.innerHTML='<span class="warn">状態取得に失敗：'+esc(e.message)+'</span>'; }
+}
+
+async function actAs(tenantId, name){
+  var email = hqEmail();
+  var s = document.getElementById('actingStatus');
+  if (!email){ alert('先に「本部ログイン用メール」を入力してください。'); return; }
+  s.textContent = '切替中…';
+  try {
+    await fetch('/api/hq/act', {method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email:email, tenant_id:tenantId})}).then(async r=>{ if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.status); });
+    refreshActing();
+    if (tenantId) {
+      s.innerHTML = '🔎 <strong>'+esc(name)+'</strong> に切り替えました。会計アプリを新しいタブで開いています…'
+        + '<div class="muted" style="margin-top:6px">⚠️ 反映には一度ログインし直し（トークン更新）が必要な場合があります。</div>';
+      window.open('https://kaikei.lifemakepartners.net', '_blank');
+    }
+  } catch(e){ s.innerHTML='<span class="warn">切替に失敗：'+esc(e.message)+'</span>'; }
+}
 
 async function addCompany(){
   var name = document.getElementById('f_name').value.trim();
