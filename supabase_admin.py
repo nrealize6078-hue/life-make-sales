@@ -17,9 +17,21 @@ SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 _TIMEOUT = 20
 
 
+def _looks_like_key(k: str) -> bool:
+    """キーが本物っぽいか。テンプレのプレースホルダ(＜貼り付け＞ 等)や
+    非ASCII混入を弾く。HTTPヘッダは latin-1 のため全角が混ざると送信時に落ちる。"""
+    if not k or len(k) < 20:
+        return False
+    try:
+        k.encode("latin-1")   # 全角・全角記号が混じっていれば False
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def enabled() -> bool:
-    """本部コンソールが使えるか（URLとキーが設定済みか）。"""
-    return bool(SUPABASE_URL and SERVICE_KEY)
+    """本部コンソールが使えるか（URLとキーが妥当に設定済みか）。"""
+    return bool(SUPABASE_URL) and _looks_like_key(SERVICE_KEY)
 
 
 class SupabaseError(Exception):
