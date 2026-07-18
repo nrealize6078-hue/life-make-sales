@@ -63,7 +63,22 @@ def _clear_session_cookie(response: Response):
 
 
 def _current_user(request: Request):
-    """Cookie のセッショントークンから現在のユーザーを返す(無効なら None)。"""
+    """現在のユーザーを返す(無効なら None)。
+    横断ログイン: まず Supabase の共有Cookie(ポータル/会計と同じ)を検証し、
+    無ければ従来の SALES 独自セッションにフォールバックする。"""
+    # ① Supabase 共有セッション（横断ログイン）
+    try:
+        import supabase_admin as _sb
+        if _sb.SB_COOKIE_NAME:
+            u = _sb.validate_session(request.cookies.get(_sb.SB_COOKIE_NAME))
+            if u:
+                return {"id": u.get("user_id"), "username": u.get("email"),
+                        "display_name": u.get("email"), "role": "hq" if u.get("is_hq") else "member",
+                        "email": u.get("email"), "company_id": None,
+                        "is_hq": bool(u.get("is_hq")), "via": "supabase"}
+    except Exception:
+        pass
+    # ② 従来の SALES 独自セッション
     return auth.get_session_user(request.cookies.get(_COOKIE))
 
 

@@ -34,6 +34,95 @@ def enabled() -> bool:
     return bool(SUPABASE_URL) and _looks_like_key(SERVICE_KEY)
 
 
+# ---------- 横断ログイン: Supabaseの共有Cookieを検証する ----------
+# ポータル/会計6アプリと同じ Cookie（sb-<ref>-auth-token）を読み、
+# Supabase Auth で access_token の有効性を確認して、ログインユーザーを返す。
+# anon キーで /auth/v1/user を叩くだけ（JWTシークレット不要）。
+ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")
+_PROJECT_REF = ""
+if SUPABASE_URL:
+    try:
+        _PROJECT_REF = SUPABASE_URL.split("//", 1)[1].split(".", 1)[0]
+    except Exception:
+        _PROJECT_REF = ""
+SB_COOKIE_NAME = ("sb-" + _PROJECT_REF + "-auth-token") if _PROJECT_REF else ""
+
+# access_token → 検証結果 の短期キャッシュ（トークンは毎回ネットワーク検証しない）
+_sess_cache = {}   # token -> (expire_epoch, user_dict or None)
+_SESS_TTL = 60     # 秒
+
+
+def _b64url_json(s: str):
+    import base64
+    s = s.replace("-", "+").replace("_", "/")
+    s += "=" * ((4 - len(s) % 4) % 4)
+    return json.loads(base64.b64decode(s).decode("utf-8"))
+
+
+def _decode_jwt_claims(token: str) -> dict:
+    try:
+        return _b64url_json(token.split(".")[1])
+    except Exception:
+        return {}
+
+
+def parse_sb_cookie(cookie_value: str):
+    """sb-<ref>-auth-token の値から session(dict) を得る。"base64-" 形式に対応。"""
+    if not cookie_value:
+        return None
+    try:
+        raw = cookie_value
+        if raw.startswith("base64-"):
+            return _b64url_json(raw[len("base64-"):])
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def validate_session(cookie_value: str):
+    """共有Cookieを検証し、ログインユーザーを返す（無効なら None）。
+    返り値: {email, user_id, is_hq, tenant_id, role} """
+    import time
+    if not (SUPABASE_URL and ANON_KEY):
+        return None
+    sess = parse_sb_cookie(cookie_value)
+    if not sess or not sess.get("access_token"):
+        return None
+    token = sess["access_token"]
+
+    now = time.time()
+    hit = _sess_cache.get(token)
+    if hit and hit[0] > now:
+        return hit[1]
+
+    # Supabase に access_token の有効性を確認
+    ok = False
+    try:
+        req = urllib.request.Request(SUPABASE_URL + "/auth/v1/user", method="GET")
+        req.add_header("apikey", ANON_KEY)
+        req.add_header("Authorization", "Bearer " + token)
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            ok = (resp.status == 200)
+    except Exception:
+        ok = False
+
+    result = None
+    if ok:
+        claims = _decode_jwt_claims(token)
+        result = {
+            "email": claims.get("email") or (sess.get("user") or {}).get("email"),
+            "user_id": claims.get("sub") or (sess.get("user") or {}).get("id"),
+            "is_hq": bool(claims.get("is_hq")),
+            "tenant_id": claims.get("tenant_id"),
+            "role": claims.get("user_role"),
+            "via": "supabase",
+        }
+    _sess_cache[token] = (now + _SESS_TTL, result)
+    if len(_sess_cache) > 500:
+        _sess_cache.clear()
+    return result
+
+
 class SupabaseError(Exception):
     pass
 
