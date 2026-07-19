@@ -79,8 +79,20 @@ def parse_sb_cookie(cookie_value: str):
         return None
 
 
+def _sb_auth_post(path: str, body: dict):
+    """Supabase Auth に anon キーで POST（token エンドポイント等）。"""
+    req = urllib.request.Request(SUPABASE_URL + path,
+                                 data=json.dumps(body).encode("utf-8"), method="POST")
+    req.add_header("apikey", ANON_KEY)
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def validate_session(cookie_value: str):
     """共有Cookieを検証し、ログインユーザーを返す（無効なら None）。
+    access_token が失効していれば refresh_token で更新して確認する
+    （会計アプリは cookie にトークンを書き戻さないため、失効したトークンが入っていることがある）。
     返り値: {email, user_id, is_hq, tenant_id, role} """
     import time
     if not (SUPABASE_URL and ANON_KEY):
@@ -89,35 +101,49 @@ def validate_session(cookie_value: str):
     if not sess or not sess.get("access_token"):
         return None
     token = sess["access_token"]
-
+    refresh = sess.get("refresh_token")
     now = time.time()
-    hit = _sess_cache.get(token)
+    key = refresh or token
+    hit = _sess_cache.get(key)
     if hit and hit[0] > now:
         return hit[1]
 
-    # Supabase に access_token の有効性を確認
-    ok = False
-    try:
-        req = urllib.request.Request(SUPABASE_URL + "/auth/v1/user", method="GET")
-        req.add_header("apikey", ANON_KEY)
-        req.add_header("Authorization", "Bearer " + token)
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-            ok = (resp.status == 200)
-    except Exception:
-        ok = False
+    claims = _decode_jwt_claims(token)
+    verified = None
+
+    # ① access_token がまだ有効なら /auth/v1/user で失効・改ざんを確認
+    if claims.get("exp", 0) > now + 10:
+        try:
+            req = urllib.request.Request(SUPABASE_URL + "/auth/v1/user", method="GET")
+            req.add_header("apikey", ANON_KEY)
+            req.add_header("Authorization", "Bearer " + token)
+            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+                if resp.status == 200:
+                    verified = claims
+        except Exception:
+            verified = None
+
+    # ② 失効/未確認なら refresh_token で更新して確認
+    if verified is None and refresh:
+        try:
+            d = _sb_auth_post("/auth/v1/token?grant_type=refresh_token",
+                              {"refresh_token": refresh})
+            if d and d.get("access_token"):
+                verified = _decode_jwt_claims(d["access_token"])
+        except Exception:
+            verified = None
 
     result = None
-    if ok:
-        claims = _decode_jwt_claims(token)
+    if verified:
         result = {
-            "email": claims.get("email") or (sess.get("user") or {}).get("email"),
-            "user_id": claims.get("sub") or (sess.get("user") or {}).get("id"),
-            "is_hq": bool(claims.get("is_hq")),
-            "tenant_id": claims.get("tenant_id"),
-            "role": claims.get("user_role"),
+            "email": verified.get("email") or (sess.get("user") or {}).get("email"),
+            "user_id": verified.get("sub") or (sess.get("user") or {}).get("id"),
+            "is_hq": bool(verified.get("is_hq")),
+            "tenant_id": verified.get("tenant_id"),
+            "role": verified.get("user_role"),
             "via": "supabase",
         }
-    _sess_cache[token] = (now + _SESS_TTL, result)
+    _sess_cache[key] = (now + _SESS_TTL, result)
     if len(_sess_cache) > 500:
         _sess_cache.clear()
     return result
