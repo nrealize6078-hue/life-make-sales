@@ -7,6 +7,8 @@ import os
 import json
 import uuid
 import hashlib
+import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, date
 from typing import Optional, List
@@ -209,14 +211,65 @@ def auth_me(request: Request):
     }
 
 
+# ----- ログイン試行の制限(総当たり対策) -----
+# 続けて 5 回失敗したら 15 分止める。ユーザー名ごと・接続元IPごとの両方で数える。
+# uvicorn は 1 プロセスで動かしているので、メモリ上の記録で足りる。
+_LOGIN_MAX_FAILS = 5
+_LOGIN_LOCK_SEC = 15 * 60
+_login_lock = threading.Lock()
+_login_fails: dict = {}  # key -> {"count": int, "last": float, "until": float}
+
+
+def _login_client_ip(request: Request) -> str:
+    # X-Forwarded-For の先頭は利用者が偽装できるので、nginx が上書きする X-Real-IP を使う
+    return (request.headers.get("x-real-ip", "").strip()
+            or (request.client.host if request.client else "unknown"))
+
+
+def _login_locked(keys: List[str]) -> bool:
+    now = time.time()
+    with _login_lock:
+        return any(_login_fails.get(k, {}).get("until", 0) > now for k in keys)
+
+
+def _login_record_fail(keys: List[str]) -> None:
+    now = time.time()
+    with _login_lock:
+        if len(_login_fails) > 10000:  # 使い捨てのユーザー名で記録が膨らまないよう掃除
+            for k in [k for k, v in _login_fails.items()
+                      if now - v["last"] > _LOGIN_LOCK_SEC and v["until"] <= now]:
+                del _login_fails[k]
+        for k in keys:
+            rec = _login_fails.get(k)
+            if not rec or now - rec["last"] > _LOGIN_LOCK_SEC:
+                rec = {"count": 0, "last": now, "until": 0.0}
+            rec["count"] += 1
+            rec["last"] = now
+            if rec["count"] >= _LOGIN_MAX_FAILS:
+                rec["until"] = now + _LOGIN_LOCK_SEC
+                rec["count"] = 0
+            _login_fails[k] = rec
+
+
+def _login_clear(keys: List[str]) -> None:
+    with _login_lock:
+        for k in keys:
+            _login_fails.pop(k, None)
+
+
 @app.post("/api/auth/login")
-def auth_login(body: LoginIn, response: Response):
+def auth_login(body: LoginIn, request: Request, response: Response):
     if not auth.auth_enabled():
         return {"ok": True, "note": "認証は無効です"}
     username = (body.username or "admin").strip()  # 旧UI(username無し)は admin とみなす
+    keys = ["u:" + username, "ip:" + _login_client_ip(request)]
+    if _login_locked(keys):
+        raise HTTPException(429, "ログインの失敗が続いたため、一時的に止めています。15分ほど待ってからお試しください")
     user = auth.get_user_by_name(username)
     if not user or not auth.verify_password(body.password, user["password_hash"]):
+        _login_record_fail(keys)
         raise HTTPException(401, "ユーザー名またはパスワードが違います")
+    _login_clear(keys)
     token = auth.create_session(user["id"])
     _set_session_cookie(response, token)
     return {"ok": True, "user": {"username": user["username"], "role": user["role"], "display_name": user["display_name"]}}
